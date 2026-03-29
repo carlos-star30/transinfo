@@ -399,7 +399,6 @@
   let modalZIndexSeed = 2000;
   let appLoadingDepth = 0;
   let activeWorkbenchCard = null;
-  const LARGE_IMPORT_CSV_THRESHOLD_BYTES = 8 * 1024 * 1024;
   const LARGE_IMPORT_CSV_CHUNK_ROWS = 5000;
 
   let currentUser = null;
@@ -7421,11 +7420,8 @@
   }
 
   function shouldUseChunkedCsvImport(tableName, file) {
-    const normalizedTable = String(tableName || "").trim().toLowerCase();
     const fileName = String(file?.name || "").trim().toLowerCase();
-    if (!fileName.endsWith(".csv")) return false;
-    if (normalizedTable === "dd03l") return true;
-    return Number(file?.size || 0) >= LARGE_IMPORT_CSV_THRESHOLD_BYTES;
+    return fileName.endsWith(".csv");
   }
 
   async function buildChunkedCsvFiles(file, headerRowNumber, chunkRowCount = LARGE_IMPORT_CSV_CHUNK_ROWS) {
