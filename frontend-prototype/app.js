@@ -399,6 +399,8 @@
   let modalZIndexSeed = 2000;
   let appLoadingDepth = 0;
   let activeWorkbenchCard = null;
+  const LARGE_IMPORT_CSV_THRESHOLD_BYTES = 8 * 1024 * 1024;
+  const LARGE_IMPORT_CSV_CHUNK_ROWS = 5000;
 
   let currentUser = null;
   let authStateEpoch = 0;
@@ -2240,6 +2242,18 @@
     window.setTimeout(() => {
       setImportBusyState(false);
     }, 260);
+  }
+
+  function setImportProgressValue(value, label = "处理中...") {
+    const normalized = Math.max(0, Math.min(100, Number(value) || 0));
+    clearImportProgressTimer();
+    if (importProgressWrap) importProgressWrap.classList.remove("hidden");
+    if (importProgressText) importProgressText.textContent = label;
+    if (importProgressBar) {
+      importProgressBar.style.width = `${normalized}%`;
+      const track = importProgressBar.parentElement;
+      if (track) track.setAttribute("aria-valuenow", String(Math.round(normalized)));
+    }
   }
 
   function saveHomeState() {
@@ -7064,7 +7078,7 @@
     return resp.json();
   }
 
-  async function executeImport({ tableName, mapping, sheetName, file, duplicateMode = "fail", headerRowNum = getHeaderRowNumber() }) {
+  async function executeSingleImportRequest({ tableName, mapping, sheetName, file, duplicateMode = "fail", headerRowNum = getHeaderRowNumber() }) {
     const formData = new FormData();
     formData.append("table_name", tableName);
     formData.append("mapping_json", JSON.stringify(mapping));
@@ -7088,6 +7102,53 @@
     }
 
     return resp.json();
+  }
+
+  async function executeChunkedCsvImport({ tableName, mapping, file, duplicateMode = "fail", headerRowNum = getHeaderRowNumber() }) {
+    const chunks = await buildChunkedCsvFiles(file, headerRowNum, LARGE_IMPORT_CSV_CHUNK_ROWS);
+    if (!chunks.length) {
+      throw new Error("文件未读取到可导入数据行。请确认有表头并至少包含1行数据。");
+    }
+
+    const summary = {
+      table_name: tableName,
+      affected_rows: 0,
+      inserted_rows: 0,
+      updated_rows: 0,
+      db_count: 0
+    };
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const percent = Math.min(96, 8 + ((index / chunks.length) * 88));
+      setImportProgressValue(percent, `正在上传第 ${index + 1}/${chunks.length} 批数据...`);
+      try {
+        const result = await executeSingleImportRequest({
+          tableName,
+          mapping,
+          sheetName: "",
+          file: chunks[index],
+          duplicateMode,
+          headerRowNum: 1
+        });
+        summary.affected_rows += Number(result?.affected_rows ?? 0);
+        summary.inserted_rows += Number(result?.inserted_rows ?? 0);
+        summary.updated_rows += Number(result?.updated_rows ?? 0);
+        summary.db_count = Number(result?.db_count ?? summary.db_count ?? 0);
+      } catch (error) {
+        const message = String(error?.message || "").trim() || "未知错误";
+        throw new Error(`第 ${index + 1}/${chunks.length} 批导入失败。${summary.affected_rows > 0 ? `此前已处理 ${formatCount(summary.affected_rows)} 条。` : ""}${message}`);
+      }
+    }
+
+    setImportProgressValue(98, `全部 ${chunks.length} 批已上传，正在完成收尾...`);
+    return summary;
+  }
+
+  async function executeImport({ tableName, mapping, sheetName, file, duplicateMode = "fail", headerRowNum = getHeaderRowNumber() }) {
+    if (shouldUseChunkedCsvImport(tableName, file)) {
+      return executeChunkedCsvImport({ tableName, mapping, file, duplicateMode, headerRowNum });
+    }
+    return executeSingleImportRequest({ tableName, mapping, sheetName, file, duplicateMode, headerRowNum });
   }
 
   async function refreshImportCardTimes() {
@@ -7317,6 +7378,78 @@
           .join(",");
       })
       .join("\n");
+  }
+
+  function splitCsvTextIntoRecords(text) {
+    const source = String(text || "");
+    const records = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let index = 0; index < source.length; index += 1) {
+      const char = source[index];
+      const nextChar = source[index + 1];
+
+      if (char === '"') {
+        current += char;
+        if (inQuotes && nextChar === '"') {
+          current += nextChar;
+          index += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+
+      if (!inQuotes && (char === "\n" || char === "\r")) {
+        records.push(current);
+        current = "";
+        if (char === "\r" && nextChar === "\n") {
+          index += 1;
+        }
+        continue;
+      }
+
+      current += char;
+    }
+
+    if (current || source.endsWith("\n") || source.endsWith("\r")) {
+      records.push(current);
+    }
+
+    return records;
+  }
+
+  function shouldUseChunkedCsvImport(tableName, file) {
+    const normalizedTable = String(tableName || "").trim().toLowerCase();
+    const fileName = String(file?.name || "").trim().toLowerCase();
+    if (!fileName.endsWith(".csv")) return false;
+    if (normalizedTable === "dd03l") return true;
+    return Number(file?.size || 0) >= LARGE_IMPORT_CSV_THRESHOLD_BYTES;
+  }
+
+  async function buildChunkedCsvFiles(file, headerRowNumber, chunkRowCount = LARGE_IMPORT_CSV_CHUNK_ROWS) {
+    const text = await file.text();
+    const records = splitCsvTextIntoRecords(text);
+    const headerIndex = Math.max(0, Number(headerRowNumber || 1) - 1);
+    if (!records.length || headerIndex >= records.length) {
+      throw new Error(`标题行数第${headerRowNumber}行超出文件有效范围`);
+    }
+
+    const headerRecord = records[headerIndex];
+    const dataRecords = records.slice(headerIndex + 1).filter((record) => String(record || "").trim());
+    if (!dataRecords.length) {
+      return [];
+    }
+
+    const baseName = String(file.name || "import.csv").replace(/\.csv$/i, "") || "import";
+    const chunks = [];
+    for (let start = 0; start < dataRecords.length; start += chunkRowCount) {
+      const chunkRows = dataRecords.slice(start, start + chunkRowCount);
+      const chunkText = `\ufeff${[headerRecord].concat(chunkRows).join("\r\n")}`;
+      chunks.push(new File([chunkText], `${baseName}.part-${chunks.length + 1}.csv`, { type: file.type || "text/csv;charset=utf-8" }));
+    }
+    return chunks;
   }
 
   async function buildImportPayloadByHeaderRow(file, sheetName, headerRowNumber) {
