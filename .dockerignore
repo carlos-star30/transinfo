@@ -1,0 +1,27 @@
+.git
+.gitignore
+.vscode
+.venv
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Non-runtime docs and template materials
+DEPLOY_*.md
+LOCAL_STARTUP.md
+TEMPLATE_INIT.md
+README.md
+docs/
+backups/
+.artifacts/
+
+# Local-only data and references
+Excel Data/
+Table Definition/
+
+# Frontend/template assets are not needed by backend API container
+frontend-prototype/
+reusable/

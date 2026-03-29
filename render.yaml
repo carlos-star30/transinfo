@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: example-business-app-api
+    runtime: docker
+    plan: free
+    dockerContext: .
+    dockerfilePath: backend/Dockerfile
+    autoDeploy: true
+    healthCheckPath: /docs
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "4000"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: trans_fields_mapping
+      - key: DB_SSL_CA
+        value: /etc/ssl/certs/ca-certificates.crt
+      - key: DB_SSL_DISABLED
+        value: "false"
+      - key: DB_SSL_VERIFY_CERT
+        value: "true"
+      - key: DB_SSL_VERIFY_IDENTITY
+        value: "true"
+      - key: DEFAULT_ADMIN_USERNAME
+        value: admin
+      - key: DEFAULT_ADMIN_PASSWORD
+        sync: false
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      - key: CORS_ALLOW_ORIGIN_REGEX
+        value: ""
+      - key: AUTH_COOKIE_NAME
+        value: trans_fields_mapping_session
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+      - key: AUTH_COOKIE_SAMESITE
+        value: none
+      - key: AUTH_COOKIE_DOMAIN
+        value: ""

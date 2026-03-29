@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>转换映射查询</title>
+  <link rel="stylesheet" href="./styles.css?v=20260329-v1.6.50" />
+  <link rel="stylesheet" href="./vendor/ag-grid/ag-grid.css?v=32.3.3" />
+  <link rel="stylesheet" href="./vendor/ag-grid/ag-theme-quartz.css?v=32.3.3" />
+  <link rel="stylesheet" href="./vendor/highlightjs/github-dark.min.css?v=11.11.1" />
+  <link rel="stylesheet" href="./vendor/table-analysis-ui-kit/table-analysis-ui-kit.css" />
+</head>
+<body class="theme-dark">
+  <div class="bg-layer" aria-hidden="true">
+    <canvas id="bgCanvas"></canvas>
+    <div class="bg-glow glow-a"></div>
+    <div class="bg-glow glow-b"></div>
+  </div>
+
+  <div class="page-shell">
+    <header class="topbar">
+      <h1 class="title-with-icon">
+        <span class="title-icon app-title-icon" aria-hidden="true">
+          <svg viewBox="0 0 96 56" focusable="false" aria-hidden="true">
+            <defs>
+              <linearGradient id="appMapBlue" x1="0" x2="1" y1="0" y2="1">
+                <stop offset="0%" stop-color="#77b8ff" />
+                <stop offset="100%" stop-color="#4e84ff" />
+              </linearGradient>
+              <linearGradient id="appMapGreen" x1="0" x2="1" y1="0" y2="1">
+                <stop offset="0%" stop-color="#6ce5cf" />
+                <stop offset="100%" stop-color="#35c798" />
+              </linearGradient>
+            </defs>
+            <rect x="6" y="7" width="26" height="42" rx="8" fill="rgba(11, 30, 59, 0.92)" stroke="#96c8ff" stroke-width="1.4" />
+            <rect x="64" y="7" width="26" height="42" rx="8" fill="rgba(10, 33, 27, 0.92)" stroke="#92e7c9" stroke-width="1.4" />
+            <rect x="12" y="14" width="14" height="5" rx="2.5" fill="url(#appMapBlue)" />
+            <rect x="12" y="26" width="14" height="5" rx="2.5" fill="url(#appMapBlue)" />
+            <rect x="12" y="38" width="10" height="5" rx="2.5" fill="url(#appMapBlue)" opacity="0.92" />
+            <rect x="70" y="14" width="14" height="5" rx="2.5" fill="url(#appMapGreen)" />
+            <rect x="70" y="26" width="14" height="5" rx="2.5" fill="url(#appMapGreen)" />
+            <rect x="74" y="38" width="10" height="5" rx="2.5" fill="url(#appMapGreen)" opacity="0.92" />
+            <path d="M32 16 H51" fill="none" stroke="#79b9ff" stroke-width="2.2" stroke-linecap="round" />
+            <path d="M32 28 H58" fill="none" stroke="#79b9ff" stroke-width="2.2" stroke-linecap="round" />
+            <path d="M32 40 H51" fill="none" stroke="#79b9ff" stroke-width="2.2" stroke-linecap="round" />
+            <path d="M46 12 L58 12 L58 20" fill="none" stroke="#ffd58a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M53 16 L58 12 L63 16" fill="none" stroke="#ffd58a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M58 24 L46 24 L46 32" fill="none" stroke="#ffd58a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M41 28 L46 32 L51 28" fill="none" stroke="#ffd58a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M46 36 H58" fill="none" stroke="#ffd58a" stroke-width="2" stroke-linecap="round" />
+            <circle cx="58" cy="36" r="2.4" fill="#ffd58a" />
+          </svg>
+        </span>
+        <span id="appTitleText">转换映射查询</span>
+        <span id="appVersionBadge" class="app-version-badge">v1.0.0</span>
+      </h1>
+      <div class="topbar-actions">
+        <div class="mode-switch" role="tablist" aria-label="Main mode switch">
+          <button id="modeQuery" class="mode-btn active" type="button" role="tab" aria-selected="true">主页</button>
+          <button id="modeDataQuery" class="mode-btn" type="button" role="tab" aria-selected="false">数据库表动态查询</button>
+          <button id="modeUpload" class="mode-btn" type="button" role="tab" aria-selected="false">数据导入</button>
+        </div>
+        <button id="userMenuBtn" class="glass-btn text-btn hidden" type="button">用户</button>
+        <div id="userMenuPanel" class="user-menu-panel hidden">
+          <div id="userMenuWho" class="user-menu-who">--</div>
+          <button id="changePasswordBtn" class="user-menu-item" type="button">修改密码</button>
+          <button id="openUserAdminBtn" class="user-menu-item hidden" type="button">用户管理</button>
+          <button id="logoutBtn" class="user-menu-item" type="button">退出登录</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace-panels">
+      <section id="queryWorkspace" class="workspace-panel is-active">
+        <section class="path-setting-panel glass-panel">
+          <div class="panel-section-head">
+            <h2>Path Setting</h2>
+          </div>
+          <div class="path-setting-grid">
+            <div class="path-setting-form soft-panel">
+              <div class="path-form-row">
+                <label for="startModelInput">Source</label>
+                <input id="startModelInput" class="glass-input path-source-input path-compact-input" type="text" placeholder="Input source BW object" autocomplete="off" list="startModelHistoryList" />
+                <input id="startSourceSystemInput" class="glass-input path-source-system-input path-compact-input" type="text" placeholder="Input source system if source is RSDS" autocomplete="off" list="startSourceSystemHistoryList" />
+              </div>
+              <div class="path-form-row">
+                <label for="endModelInput">Target</label>
+                <input id="endModelInput" class="glass-input path-target-input path-compact-input" type="text" placeholder="Input target BW object" autocomplete="off" list="endModelHistoryList" />
+              </div>
+              <div class="path-inline-actions">
+                <button id="clearPathFieldsBtn" class="path-selection-tag-btn" type="button">清除选择</button>
+              </div>
+            </div>
+            <div class="path-waypoint-panel path-tranid-panel soft-panel">
+              <div class="path-tranid-stack">
+                <div class="path-tranid-inputs">
+                  <input id="tranIdInput" class="glass-input path-tranid-input path-compact-input" type="text" placeholder="Input transformation ID" autocomplete="off" list="tranIdHistoryList" />
+                </div>
+                <div class="path-inline-actions">
+                  <button id="clearTranIdBtn" class="path-selection-tag-btn" type="button">清除选择</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <datalist id="startModelHistoryList"></datalist>
+          <datalist id="startSourceSystemHistoryList"></datalist>
+          <datalist id="endModelHistoryList"></datalist>
+          <datalist id="tranIdHistoryList"></datalist>
+          <div class="path-setting-actions">
+            <button id="pathSearchBtn" class="glass-btn strong action-btn path-compact-button" type="button">查询</button>
+          </div>
+        </section>
+
+        <section id="pathSelectionPanel" class="path-selection-panel glass-panel">
+          <div class="panel-section-head panel-section-head-inline">
+            <h2>Path Selection</h2>
+            <div class="panel-section-actions">
+              <button id="autoCollapsePathBtn" class="path-auto-collapse-btn is-on" type="button" aria-pressed="true" title="选择路径后自动收起候选路径列表">
+                <span class="path-auto-collapse-label">Auto collapse</span>
+                <span class="path-auto-collapse-state">ON</span>
+              </button>
+              <button id="togglePathSelectionBtn" class="panel-collapse-btn panel-collapse-icon-btn" type="button" aria-expanded="true" title="收起 Path Selection" aria-label="收起 Path Selection">
+                <span class="panel-collapse-icon" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+          <div id="pathSelectionStage" class="path-selection-stage">
+            <div id="pathGraphCanvas" class="path-graph-canvas">
+              <div class="path-graph-placeholder">
+                <span class="path-graph-placeholder-title">Path Graph Preview</span>
+                <span class="path-graph-placeholder-text">先完成基础数据导入，再从起点到终点生成可选路径。</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="mappingResultPanel" class="mapping-result-panel glass-panel">
+          <div class="mapping-toolbar">
+            <div class="mapping-toolbar-actions">
+              <button id="toggleMappingResultPanelBtn" class="glass-btn tiny" type="button" aria-pressed="false" title="放大视图">放大视图</button>
+              <button id="exportPathResultBtn" class="glass-btn strong tiny" type="button">Export to Excel</button>
+              <button id="copySourceKeyFieldsBtn" class="glass-btn tiny" type="button">Copy source key fields</button>
+            </div>
+          </div>
+          <div class="mapping-panels-grid" id="mappingPanelsGrid">
+            <article class="mapping-segment-card soft-panel mapping-empty-card">
+              <div class="mapping-segment-meta">
+                <div>Path Result</div>
+                <div>请先点击一条候选路径，直接加载下方字段映射结果。</div>
+              </div>
+              <table class="mapping-preview-table">
+                <tbody>
+                  <tr><td colspan="7">请先点击一条候选路径，直接加载下方字段映射结果。</td></tr>
+                </tbody>
+              </table>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section id="dataQueryWorkspace" class="workspace-panel hidden">
+        <section id="dataQueryBuilderPanel" class="database-query-builder-panel glass-panel">
+          <div class="panel-section-head panel-section-head-inline">
+            <div>
+              <h2>数据库表动态查询</h2>
+              <p>第一阶段：支持单表查询，并可关联另外一张表；先预览 10 条，确认条件后再取更多数据。</p>
+            </div>
+            <div class="panel-section-actions database-query-top-actions">
+              <button id="dataQueryPreviewBtn" class="glass-btn tiny" type="button">预览 10 条</button>
+              <button id="dataQueryRunBtn" class="glass-btn strong tiny" type="button">执行查询</button>
+              <button id="toggleDataQueryConfigBtn" class="panel-collapse-btn panel-collapse-icon-btn" type="button" aria-expanded="true" title="收起查询面板" aria-label="收起查询面板">
+                <span class="panel-collapse-icon" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="database-query-builder-body">
+          <div class="database-query-layout">
+            <section id="dataQueryConfigCard" class="database-query-config-card soft-panel">
+              <div class="database-query-card-head database-query-card-head-inline">
+                <div>
+                <h3>查询设置</h3>
+                <span class="database-query-card-note">主表必选；关联表可选。选择完成后自动预览 10 条。</span>
+                </div>
+              </div>
+              <div class="database-query-config-body">
+              <div class="database-query-form-grid">
+                <label class="database-query-field">
+                  <span>主表</span>
+                  <select id="dataQueryMainTableSelect" class="glass-input">
+                    <option value="">请选择主表</option>
+                  </select>
+                </label>
+                <label class="database-query-field">
+                  <span>关联表</span>
+                  <select id="dataQueryJoinTableSelect" class="glass-input">
+                    <option value="">不关联</option>
+                  </select>
+                </label>
+                <label class="database-query-field">
+                  <span>关联类型</span>
+                  <select id="dataQueryJoinTypeSelect" class="glass-input">
+                    <option value="left">LEFT JOIN</option>
+                    <option value="inner">INNER JOIN</option>
+                    <option value="right">RIGHT JOIN</option>
+                  </select>
+                </label>
+                <label class="database-query-field">
+                  <span>正式查询条数</span>
+                  <input id="dataQueryLimitInput" class="glass-input" type="number" min="10" max="1000" step="10" value="200" />
+                </label>
+                <div class="database-query-field database-query-join-condition-field">
+                  <div class="database-query-join-condition-head">
+                    <span>关联字段</span>
+                    <div class="database-query-join-condition-actions">
+                      <button id="dataQueryAddJoinConditionBtn" class="glass-btn tiny" type="button">新增关联字段</button>
+                      <button id="dataQueryClearJoinConditionsBtn" class="glass-btn tiny" type="button">清空关联字段</button>
+                    </div>
+                  </div>
+                  <div id="dataQueryJoinConditionsList" class="database-query-join-conditions-list"></div>
+                  <div class="database-query-join-condition-note">可增加多组关联字段，按 AND 组合。未选择关联表时这里自动隐藏。</div>
+                </div>
+              </div>
+              <div id="dataQueryConfigHint" class="database-query-config-hint">请选择主表后开始预览。</div>
+              </div>
+            </section>
+
+            <section class="database-query-filter-card soft-panel">
+              <div class="database-query-card-head database-query-card-head-inline">
+                <div>
+                  <h3>筛选条件</h3>
+                  <span class="database-query-card-note">支持多单值、区间，以及从剪贴板粘贴批量值。</span>
+                </div>
+                <div class="database-query-filter-actions">
+                  <button id="dataQueryAddFilterBtn" class="glass-btn tiny" type="button">新增筛选</button>
+                  <button id="dataQueryClearFiltersBtn" class="glass-btn tiny" type="button">清空筛选</button>
+                </div>
+              </div>
+              <div id="dataQueryFiltersList" class="database-query-filters-list"></div>
+            </section>
+          </div>
+          </div>
+        </section>
+
+        <section id="dataQueryResultPanel" class="database-query-result-panel glass-panel">
+          <div class="panel-section-head panel-section-head-inline">
+            <div>
+              <h2>查询结果</h2>
+              <p id="dataQueryResultSummary">请选择主表；系统会先抽取 10 条预览数据。</p>
+            </div>
+            <div class="panel-section-actions database-query-result-actions">
+              <button id="exportDataQueryResultBtn" class="glass-btn strong tiny hidden" type="button">Export to Excel</button>
+            </div>
+          </div>
+          <div id="dataQuerySelectFieldsPanel" class="database-query-result-fields-panel soft-panel">
+            <div class="database-query-select-fields-head">
+              <span>查询字段</span>
+              <div class="database-query-select-fields-actions">
+                <button id="toggleDataQueryResultPanelBtn" class="glass-btn tiny" type="button" aria-pressed="false" title="放大视图">放大视图</button>
+                <button id="dataQuerySelectAllFieldsBtn" class="glass-btn tiny" type="button">全选</button>
+                <button id="dataQueryClearSelectedFieldsBtn" class="glass-btn tiny" type="button">清除</button>
+                <button id="dataQueryApplySelectFieldsBtn" class="glass-btn tiny strong" type="button">确定</button>
+                <button id="dataQueryToggleSelectFieldsBtn" class="panel-collapse-btn panel-collapse-icon-btn database-query-select-fields-collapse-btn" type="button" aria-expanded="true" title="收起查询字段" aria-label="收起查询字段">
+                  <span class="panel-collapse-icon" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+            <input id="dataQuerySelectFieldSearchInput" class="glass-input database-query-select-fields-search" type="text" placeholder="搜索字段（例如 OBJVERS / IOBJNM）" />
+            <div id="dataQuerySelectFieldsList" class="database-query-select-fields-list database-query-result-fields-list"></div>
+          </div>
+          <div id="dataQueryResultEmpty" class="database-query-result-empty soft-panel">请选择主表；系统会先抽取 10 条预览数据。</div>
+          <div id="dataQueryGridShell" class="ag-theme-quartz database-query-grid-shell hidden">
+            <div id="dataQueryGrid" class="database-query-grid"></div>
+          </div>
+        </section>
+      </section>
+
+      <section id="uploadWorkspace" class="workspace-panel hidden">
+        <section class="import-home-section">
+          <h2 class="import-section-title">
+            <span>Data Import and Processing</span>
+          </h2>
+          <p class="import-section-note">把原始元数据导入库表，并在需要时执行重建处理，生成后续查询使用的派生结果。</p>
+          <div class="import-workbench">
+            <section class="import-main-lane import-function-zone import-function-zone-import glass-panel">
+              <div class="import-function-head import-function-head-main">
+                <div>
+                  <h3 class="import-function-title title-with-icon">
+                    <span class="title-icon excel-file-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                        <rect x="1" y="1" width="22" height="22" rx="5" fill="#1f9f63" />
+                        <path d="M7.2 6.4h3.4l2.4 3 2.4-3h3.4l-4.1 5.3 4.3 5.9h-3.5l-2.5-3.4-2.6 3.4H7l4.2-5.7z" fill="#ffffff" />
+                      </svg>
+                    </span>
+                    <span>数据导入</span>
+                  </h3>
+                  <p class="import-function-note">导入 SAP 原始表，作为后续处理的基础数据。<span class="import-function-meta import-function-meta-inline">Raw Tables</span></p>
+                </div>
+              </div>
+              <div class="import-card-grid import-card-grid-six">
+                <button id="importRstranCard" class="import-card glass-panel" type="button" data-table="rstran" data-title="转换（RSTRAN)">
+                  <span class="import-card-title">转换</span>
+                  <span class="import-card-sub">RSTRAN｜Transformation 主表，路径搜索起点</span>
+                  <span class="import-card-time">更新时间：<span id="importRstranTime">--</span> | 数据条目：<span id="importRstranCount">0</span></span>
+                </button>
+                <button id="importRstranruleCard" class="import-card glass-panel" type="button" data-table="rstranrule" data-title="转换-字段映射规则（RSTRANRULE)">
+                  <span class="import-card-title">转换-字段映射规则</span>
+                  <span class="import-card-sub">RSTRANRULE｜Transformation Rule，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRstranruleTime">--</span> | 数据条目：<span id="importRstranruleCount">0</span></span>
+                </button>
+                <button id="importRstranfieldCard" class="import-card glass-panel" type="button" data-table="rstranfield" data-title="转换-映射字段（RSTRANFIELD)">
+                  <span class="import-card-title">转换-映射字段</span>
+                  <span class="import-card-sub">RSTRANFIELD｜Rule Parameters，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRstranfieldTime">--</span> | 数据条目：<span id="importRstranfieldCount">0</span></span>
+                </button>
+                <button id="importRstranstepcnstCard" class="import-card glass-panel" type="button" data-table="rstranstepcnst" data-title="字段规则：Constant值（RSTRANSTEPCNST)">
+                  <span class="import-card-title">字段规则：Constant值</span>
+                  <span class="import-card-sub">RSTRANSTEPCNST｜Transformation Constant；字段元数据取 DD03L，表名文本取 DD02T</span>
+                  <span class="import-card-time">更新时间：<span id="importRstranstepcnstTime">--</span> | 数据条目：<span id="importRstranstepcnstCount">0</span></span>
+                </button>
+                <button id="importRstransteproutCard" class="import-card glass-panel" type="button" data-table="rstransteprout" data-title="字段规则：公式/Routine（RSTRANSTEPROUT)">
+                  <span class="import-card-title">字段规则：公式/Routine</span>
+                  <span class="import-card-sub">RSTRANSTEPROUT｜Transformation Formula/Routine；字段元数据取 DD03L，表名文本取 DD02T</span>
+                  <span class="import-card-time">更新时间：<span id="importRstransteproutTime">--</span> | 数据条目：<span id="importRstransteproutCount">0</span></span>
+                </button>
+                <button id="importRsoadsoCard" class="import-card glass-panel" type="button" data-table="rsoadso" data-title="ADSO技术属性（RSOADSO)">
+                  <span class="import-card-title">ADSO技术属性</span>
+                  <span class="import-card-sub">RSOADSO｜用于辅助判断应取哪张 DD03L 技术表结构，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsoadsoTime">--</span> | 数据条目：<span id="importRsoadsoCount">0</span></span>
+                </button>
+                <button id="importRsoadsotCard" class="import-card glass-panel" type="button" data-table="rsoadsot" data-title="ADSO名称（RSOADSOT)">
+                  <span class="import-card-title">ADSO名称</span>
+                  <span class="import-card-sub">RSOADSOT｜ADSO 名称表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsoadsotTime">--</span> | 数据条目：<span id="importRsoadsotCount">0</span></span>
+                </button>
+                <button id="importRsdsCard" class="import-card glass-panel" type="button" data-table="rsds" data-title="数据源（RSDS)">
+                  <span class="import-card-title">数据源</span>
+                  <span class="import-card-sub">RSDS｜Datasource 主表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsdsTime">--</span> | 数据条目：<span id="importRsdsCount">0</span></span>
+                </button>
+                <button id="importRsdstCard" class="import-card glass-panel" type="button" data-table="rsdst" data-title="数据源-文本（RSDST)">
+                  <span class="import-card-title">数据源-文本</span>
+                  <span class="import-card-sub">RSDST｜Datasource 文本表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsdstTime">--</span> | 数据条目：<span id="importRsdstCount">0</span></span>
+                </button>
+                <button id="importRsdssegfdCard" class="import-card glass-panel" type="button" data-table="rsdssegfd" data-title="数据源-字段（RSDSSEGFD)">
+                  <span class="import-card-title">数据源-字段</span>
+                  <span class="import-card-sub">RSDSSEGFD｜Datasource 字段清单主表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsdssegfdTime">--</span> | 数据条目：<span id="importRsdssegfdCount">0</span></span>
+                </button>
+                <button id="importRsdssegfdtCard" class="import-card glass-panel" type="button" data-table="rsdssegfdt" data-title="数据源-字段文本（RSDSSEGFDT)">
+                  <span class="import-card-title">数据源-字段文本</span>
+                  <span class="import-card-sub">RSDSSEGFDT｜Datasource 字段文本表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsdssegfdtTime">--</span> | 数据条目：<span id="importRsdssegfdtCount">0</span></span>
+                </button>
+                <button id="importRsksnewCard" class="import-card glass-panel" type="button" data-table="rsksnew" data-title="信息源-属性（RSKSNEW)">
+                  <span class="import-card-title">信息源-属性</span>
+                  <span class="import-card-sub">RSKSNEW｜InfoSource 主表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsksnewTime">--</span> | 数据条目：<span id="importRsksnewCount">0</span></span>
+                </button>
+                <button id="importRsksnewtCard" class="import-card glass-panel" type="button" data-table="rsksnewt" data-title="信息源-名称（RSKSNEWT)">
+                  <span class="import-card-title">信息源-名称</span>
+                  <span class="import-card-sub">RSKSNEWT｜InfoSource 文本表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsksnewtTime">--</span> | 数据条目：<span id="importRsksnewtCount">0</span></span>
+                </button>
+                <button id="importRsksfieldnewCard" class="import-card glass-panel" type="button" data-table="rsksfieldnew" data-title="信息源-字段（RSKSFIELDNEW)">
+                  <span class="import-card-title">信息源-字段</span>
+                  <span class="import-card-sub">RSKSFIELDNEW｜InfoSource 字段定义表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsksfieldnewTime">--</span> | 数据条目：<span id="importRsksfieldnewCount">0</span></span>
+                </button>
+                <button id="importRsksfieldnewtCard" class="import-card glass-panel" type="button" data-table="rsksfieldnewt" data-title="信息源-字段名称（RSKSFIELDNEWT)">
+                  <span class="import-card-title">信息源-字段名称</span>
+                  <span class="import-card-sub">RSKSFIELDNEWT｜InfoSource 字段文本表，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsksfieldnewtTime">--</span> | 数据条目：<span id="importRsksfieldnewtCount">0</span></span>
+                </button>
+                <button id="importDd03lCard" class="import-card glass-panel" type="button" data-table="dd03l" data-title="元数据表-表字段（DD03L)">
+                  <span class="import-card-title">元数据表-表字段</span>
+                  <span class="import-card-sub">DD03L｜表字段元数据；ADSO 固定按 TABNAME=/BIC/A+技术名+1位数字、FIELDNAME 按 /BIC/ 去前缀或补 0 解析</span>
+                  <span class="import-card-time">更新时间：<span id="importDd03lTime">--</span> | 数据条目：<span id="importDd03lCount">0</span></span>
+                </button>
+                <button id="importDd02tCard" class="import-card glass-panel" type="button" data-table="dd02t" data-title="元数据表-表名称（DD02T)">
+                  <span class="import-card-title">元数据表-表名称</span>
+                  <span class="import-card-sub">DD02T｜数据字典表文本信息，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importDd02tTime">--</span> | 数据条目：<span id="importDd02tCount">0</span></span>
+                </button>
+                <button id="importDd03tCard" class="import-card glass-panel" type="button" data-table="dd03t" data-title="元数据表-表字段名称（DD03T)">
+                  <span class="import-card-title">元数据表-表字段名称</span>
+                  <span class="import-card-sub">DD03T｜数据字典字段文本信息，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importDd03tTime">--</span> | 数据条目：<span id="importDd03tCount">0</span></span>
+                </button>
+                <button id="importDd04tCard" class="import-card glass-panel" type="button" data-table="dd04t" data-title="元数据表-数据元素文本（DD04T)">
+                  <span class="import-card-title">数据元素文本</span>
+                  <span class="import-card-sub">DD04T｜数据元素文本信息，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importDd04tTime">--</span> | 数据条目：<span id="importDd04tCount">0</span></span>
+                </button>
+                <button id="importRsiobjCard" class="import-card glass-panel" type="button" data-table="rsdiobj" data-title="信息对象属性（RSDIOBJ)">
+                  <span class="import-card-title">信息对象属性</span>
+                  <span class="import-card-sub">RSDIOBJ｜信息对象属性定义，按主键更新导入</span>
+                  <span class="import-card-time">更新时间：<span id="importRsiobjTime">--</span> | 数据条目：<span id="importRsiobjCount">0</span></span>
+                </button>
+                <button id="importRsiobjtCard" class="import-card glass-panel" type="button" data-table="rsdiobjt" data-title="信息对象文本（RSDIOBJT)">
+                  <span class="import-card-title">信息对象文本</span>
+                  <span class="import-card-sub">RSDIOBJT｜信息对象 EN/DE 文本；字段元数据取 DD03L，表名文本取 DD02T</span>
+                  <span class="import-card-time">更新时间：<span id="importRsiobjtTime">--</span> | 数据条目：<span id="importRsiobjtCount">0</span></span>
+                </button>
+              </div>
+            </section>
+
+            <aside class="import-side-lane">
+              <section class="import-function-zone import-function-zone-process glass-panel import-side-panel">
+                <div class="import-function-head import-function-head-side">
+                  <div>
+                    <h3 class="import-function-title">数据处理</h3>
+                    <p class="import-function-note">重建派生结果表，不改动原始导入表。<span class="import-function-meta import-function-meta-inline">Derived Tables</span></p>
+                  </div>
+                </div>
+
+                <div class="import-card-grid import-card-grid-process">
+                  <button id="rebuildRstranMappingRuleBtn" class="import-card import-card-action import-card-action-process glass-panel" type="button">
+                    <span id="rebuildRstranMappingRuleBtnTitle" class="import-card-title">重建字段规则表</span>
+                    <span class="import-card-sub">执行前提：至少已导入 RSTRANRULE、RSTRANFIELD；如需同时查看公式/例程/常量，再导入 RSTRANSTEPROUT、RSTRANSTEPCNST。运行时机：这些规则表有新增、补导或重导后执行。</span>
+                  </button>
+                  <button id="rebuildRstranMappingRuleFullBtn" class="import-card import-card-action import-card-action-process glass-panel" type="button">
+                    <span id="rebuildRstranMappingRuleFullBtnTitle" class="import-card-title">重建完整字段表</span>
+                    <span class="import-card-sub">执行前提：已先重建字段规则表，并已导入 RSTRAN；再按对象类型补齐 DD03L、RSDSSEGFD、RSKSFIELDNEW、RSDIOBJ、RSOADSO。运行时机：基础映射或这些元数据有新增、补导或重导后执行。</span>
+                  </button>
+                </div>
+                <p class="import-side-hint">建议顺序：先导入上方原始表，再执行下方重建。</p>
+              </section>
+            </aside>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <section id="importModal" class="import-modal hidden">
+    <div class="import-shell import-shell-main glass-panel">
+      <div class="import-head">
+        <h2 id="importModalTitle">字段映射</h2>
+        <div class="window-controls">
+          <button id="maxImportModal" class="glass-btn tiny more-window-btn more-window-btn-max" type="button" aria-label="最大化/还原" title="最大化"></button>
+          <button id="closeImportModal" class="glass-btn tiny more-window-btn more-window-btn-close" type="button" aria-label="关闭" title="关闭"></button>
+        </div>
+      </div>
+
+      <div class="import-tools">
+        <input id="importFileInput" type="file" accept=".xlsx,.xls,.csv" />
+        <label class="import-tool-label" for="importSheetSelect">页签</label>
+        <select id="importSheetSelect" title="选择Sheet" disabled>
+          <option value="">Sheet页</option>
+        </select>
+        <label id="importHeaderRowWrap" class="import-tool-inline" for="importHeaderRowSelect">
+          <span class="import-tool-label">标题行</span>
+          <select id="importHeaderRowSelect" class="import-tool-select" title="选择标题行">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+          </select>
+        </label>
+        <button id="autoMapBtn" class="glass-btn" type="button">自动映射</button>
+      </div>
+
+      <div class="import-meta" id="importMeta">请选择 Excel 文件后开始字段映射。</div>
+
+      <div id="importProgressWrap" class="import-progress hidden" aria-live="polite">
+        <div id="importProgressText" class="import-progress-text">处理中...</div>
+        <div class="import-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="导入进度">
+          <div id="importProgressBar" class="import-progress-fill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <div class="import-table-wrap">
+        <table class="import-map-table">
+          <thead>
+            <tr>
+              <th>数据库字段</th>
+              <th>固定值</th>
+              <th>Excel字段</th>
+            </tr>
+          </thead>
+          <tbody id="importMapBody"></tbody>
+        </table>
+      </div>
+
+      <div class="import-actions">
+        <button id="clearImportTableBtn" class="glass-btn danger-btn hidden" type="button">删除全部数据</button>
+        <button id="confirmImportBtn" class="glass-btn strong" type="button">开始导入</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="loginGate" class="login-gate hidden">
+    <div class="login-shell glass-panel">
+      <h2 id="loginTitleText">转换映射查询</h2>
+      <div class="login-form-row">
+        <label for="loginUsername">用户名</label>
+        <input id="loginUsername" type="text" autocomplete="username" />
+      </div>
+      <div class="login-form-row">
+        <label for="loginPassword">密码</label>
+        <div class="login-password-inline">
+          <input id="loginPassword" type="password" autocomplete="current-password" />
+          <button id="loginShowPassword" class="login-password-toggle" type="button" aria-label="显示密码" aria-pressed="false" title="显示密码">
+            <span class="login-password-toggle-eye" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+      <div id="loginErrorText" class="login-error-text hidden"></div>
+      <div class="login-actions">
+        <button id="loginSubmitBtn" class="glass-btn strong" type="button">登录</button>
+        <button id="loginCancelBtn" class="glass-btn" type="button">清空输入</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="changePasswordModal" class="import-modal hidden">
+    <div class="import-shell import-shell-form glass-panel">
+      <div class="import-head">
+        <h2>修改密码</h2>
+        <div class="window-controls">
+          <button id="maxChangePasswordModal" class="glass-btn tiny more-window-btn more-window-btn-max" type="button" aria-label="最大化/还原" title="最大化"></button>
+          <button id="closeChangePasswordModal" class="glass-btn tiny more-window-btn more-window-btn-close" type="button" aria-label="关闭" title="关闭"></button>
+        </div>
+      </div>
+      <div class="import-tools create-user-tools modal-form-grid">
+        <input id="currentPasswordInput" type="password" placeholder="当前密码" autocomplete="current-password" />
+        <input id="newPasswordInput" type="password" placeholder="新密码" autocomplete="new-password" />
+      </div>
+      <div class="import-actions">
+        <button id="submitChangePasswordBtn" class="glass-btn strong" type="button">提交修改</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="userAdminModal" class="import-modal hidden">
+    <div class="import-shell import-shell-table glass-panel">
+      <div class="import-head">
+        <h2>用户管理</h2>
+        <div class="window-controls">
+          <button id="maxUserAdminModal" class="glass-btn tiny more-window-btn more-window-btn-max" type="button" aria-label="最大化/还原" title="最大化"></button>
+          <button id="closeUserAdminModal" class="glass-btn tiny more-window-btn more-window-btn-close" type="button" aria-label="关闭" title="关闭"></button>
+        </div>
+      </div>
+      <div class="import-tools import-tools-end">
+        <button id="createUserBtn" class="glass-btn" type="button">新增用户</button>
+      </div>
+      <div class="import-table-wrap">
+        <table class="import-map-table">
+          <thead>
+            <tr>
+              <th>用户名</th>
+              <th>角色</th>
+              <th>状态</th>
+              <th>最近登录</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="userAdminTableBody"></tbody>
+        </table>
+      </div>
+      <div class="import-actions">
+        <button id="refreshUsersBtn" class="glass-btn" type="button">刷新列表</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="createUserModal" class="import-modal hidden">
+    <div class="import-shell import-shell-form glass-panel">
+      <div class="import-head">
+        <h2>新增用户</h2>
+        <div class="window-controls">
+          <button id="maxCreateUserModal" class="glass-btn tiny more-window-btn more-window-btn-max" type="button" aria-label="最大化/还原" title="最大化"></button>
+          <button id="closeCreateUserModal" class="glass-btn tiny more-window-btn more-window-btn-close" type="button" aria-label="关闭" title="关闭"></button>
+        </div>
+      </div>
+      <div class="import-tools create-user-tools modal-form-grid">
+        <input id="newUserNameInput" type="text" placeholder="新用户名" />
+        <input id="newUserPasswordInput" type="password" placeholder="初始密码" />
+        <div class="role-inline">
+          <label for="newUserRoleSelect">角色：</label>
+          <select id="newUserRoleSelect">
+            <option value="admin">admin</option>
+            <option value="user">user</option>
+          </select>
+        </div>
+      </div>
+      <div class="import-actions">
+        <button id="submitCreateUserBtn" class="glass-btn strong" type="button">确认新增</button>
+        <button id="cancelCreateUserBtn" class="glass-btn" type="button">取消</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="adminResetUserModal" class="import-modal hidden">
+    <div class="import-shell import-shell-form glass-panel">
+      <div class="import-head">
+        <h2>用户管理 - 修改密码</h2>
+        <div class="window-controls">
+          <button id="maxAdminResetUserModal" class="glass-btn tiny more-window-btn more-window-btn-max" type="button" aria-label="最大化/还原" title="最大化"></button>
+          <button id="closeAdminResetUserModal" class="glass-btn tiny more-window-btn more-window-btn-close" type="button" aria-label="关闭" title="关闭"></button>
+        </div>
+      </div>
+      <div class="import-tools create-user-tools modal-form-grid">
+        <input id="adminResetUserNameInput" type="text" placeholder="用户名" readonly class="readonly-info" />
+        <input id="adminResetUserRoleInput" type="text" placeholder="角色" readonly class="readonly-info" />
+        <input id="adminResetUserPasswordInput" type="password" placeholder="新密码" autocomplete="new-password" />
+      </div>
+      <div class="import-actions">
+        <button id="submitAdminResetUserBtn" class="glass-btn strong danger-btn" type="button">确认修改密码</button>
+        <button id="cancelAdminResetUserBtn" class="glass-btn" type="button">取消</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="logicViewerModal" class="import-modal logic-viewer-modal hidden" aria-modal="true">
+    <div class="import-shell import-shell-code logic-viewer-shell glass-panel" tabindex="-1">
+      <div class="import-head">
+        <h2 id="logicViewerTitle">转换逻辑查看</h2>
+        <div class="window-controls">
+          <button id="maxLogicViewerModal" class="glass-btn tiny more-window-btn more-window-btn-max" type="button" aria-label="最大化/还原" title="最大化"></button>
+          <button id="closeLogicViewerModal" class="glass-btn tiny more-window-btn more-window-btn-close" type="button" aria-label="关闭" title="关闭"></button>
+        </div>
+      </div>
+      <div id="logicViewerMeta" class="logic-viewer-meta"></div>
+      <div class="logic-viewer-layout">
+        <aside id="logicViewerNav" class="logic-viewer-nav"></aside>
+        <section class="logic-viewer-content">
+          <div id="logicViewerEntryMeta" class="logic-viewer-entry-meta"></div>
+          <div class="logic-viewer-code-shell">
+            <div id="logicViewerPre" class="logic-viewer-pre">
+              <div id="logicViewerEditor" class="logic-viewer-editor" aria-label="Transformation logic viewer"></div>
+              <code id="logicViewerCode" class="logic-viewer-code language-plaintext" aria-hidden="true"></code>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="import-actions logic-viewer-actions">
+        <button id="copyLogicViewerBtn" class="glass-btn" type="button">复制内容</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="appLoadingOverlay" class="app-loading-overlay hidden" aria-hidden="true">
+    <div class="app-loading-card">
+      <div class="app-loading-spinner" aria-hidden="true"></div>
+      <div id="appLoadingText" class="app-loading-text">处理中...</div>
+    </div>
+  </div>
+
+  <div id="appToast" class="app-toast hidden" role="alertdialog" aria-live="assertive" aria-hidden="true" aria-modal="false">
+    <div id="appToastCard" class="app-toast-card" tabindex="-1">
+      <div id="appToastTitle" class="app-toast-title hidden">
+        <span id="appToastTitleIcon" class="app-toast-title-icon" aria-hidden="true"></span>
+        <span id="appToastTitleText" class="app-toast-title-text"></span>
+      </div>
+      <div id="appToastText" class="app-toast-text"></div>
+      <div id="appToastActions" class="app-toast-actions hidden">
+        <button id="appToastCopyBtn" class="app-toast-btn" type="button">复制</button>
+        <button id="appToastSecondaryBtn" class="app-toast-btn app-toast-btn-secondary hidden" type="button">取消</button>
+        <button id="appToastPrimaryBtn" class="app-toast-btn app-toast-btn-primary hidden" type="button">继续</button>
+        <button id="appToastCloseBtn" class="app-toast-btn" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./mock-data.js?v=20260324-v1.6.34"></script>
+  <script src="./runtime-config.js?v=20260324-v1.6.34"></script>
+  <script src="./vendor/table-analysis-ui-kit/table-analysis-ui-kit.js"></script>
+  <script src="./vendor/ag-grid/ag-grid-community.min.js?v=32.3.3"></script>
+  <script src="./vendor/highlightjs/common.min.js?v=11.11.1"></script>
+  <script src="./app.js?v=20260329-v1.6.51"></script>
+</body>
+</html>

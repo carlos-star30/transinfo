@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Table Analysis UI Kit Demo</title>
+  <link rel="stylesheet" href="./table-analysis-ui-kit.css" />
+</head>
+<body class="ta-kit-demo-page">
+  <div class="ta-kit-demo-stack">
+    <div class="ta-kit-demo-note">这个目录就是可复制组件包。把整个目录复制到其他项目里，然后参考下面页面里的初始化方式即可。</div>
+    <div id="displayTableMount"></div>
+    <div>
+      <button id="openValueModalDemo" class="ta-kit-btn strong" type="button">Open Object Value Selection Screen</button>
+    </div>
+  </div>
+
+  <script src="./table-analysis-ui-kit.js"></script>
+  <script>
+    const sampleColumns = [
+      { key: "object_type", label: "Type" },
+      { key: "object_id", label: "Object" },
+      { key: "object_name_en", label: "Object Name EN", localeGroup: "en" },
+      { key: "object_name_de", label: "Object Name DE", localeGroup: "de" },
+      { key: "field_id", label: "Field" },
+      { key: "name_en", label: "Field Name EN", localeGroup: "en" },
+      { key: "name_de", label: "Field Name DE", localeGroup: "de" },
+      { key: "data_type", label: "Data Type" }
+    ];
+
+    const sampleRows = [
+      {
+        object_type: "IOBJ",
+        object_id: "0CUSTOMER",
+        object_name_en: "Customer",
+        object_name_de: "Kunde",
+        field_id: "CUSTOMER",
+        name_en: "Customer",
+        name_de: "Kunde",
+        data_type: "CHAR"
+      },
+      {
+        object_type: "ADSO",
+        object_id: "ZSALES_A01",
+        object_name_en: "Sales ADSO",
+        object_name_de: "Sales ADSO",
+        field_id: "NET_VALUE",
+        name_en: "Net Value",
+        name_de: "Nettowert",
+        data_type: "DEC"
+      },
+      {
+        object_type: "TABLE",
+        object_id: "ZINV_B02",
+        object_name_en: "Inventory Table",
+        object_name_de: "Inventartabelle",
+        field_id: "PLANT",
+        name_en: "Plant",
+        name_de: "Werk",
+        data_type: "CHAR"
+      }
+    ];
+
+    const tableComponent = window.TableAnalysisUIKit.createDisplayTable(
+      document.getElementById("displayTableMount"),
+      {
+        title: "Result List",
+        columns: sampleColumns,
+        rows: sampleRows
+      }
+    );
+
+    const valueModal = window.TableAnalysisUIKit.createValueSelectionModal({
+      onConfirm(rules) {
+        console.log("Confirmed rules:", rules);
+      },
+      onError(error) {
+        alert(error.message || String(error));
+      }
+    });
+
+    document.getElementById("openValueModalDemo").addEventListener("click", function () {
+      valueModal.open({
+        title: "Object Value Selection Screen",
+        fieldName: "object_id",
+        rules: [
+          { exclude: false, from: "1000", to: "1999" },
+          { exclude: true, from: "1500", to: "1599" }
+        ]
+      });
+    });
+  </script>
+</body>
+</html>
