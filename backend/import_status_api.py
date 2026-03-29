@@ -31,10 +31,11 @@ DB_SSL_CA = str(os.getenv("DB_SSL_CA", "")).strip()
 DB_SSL_DISABLED = str(os.getenv("DB_SSL_DISABLED", "false")).strip().lower() == "true"
 DB_SSL_VERIFY_CERT = str(os.getenv("DB_SSL_VERIFY_CERT", "false")).strip().lower() == "true"
 DB_SSL_VERIFY_IDENTITY = str(os.getenv("DB_SSL_VERIFY_IDENTITY", "false")).strip().lower() == "true"
+DB_SSL_CA_PATH = Path(DB_SSL_CA) if DB_SSL_CA else None
 
 if DB_SSL_DISABLED:
     DB_CONFIG["ssl_disabled"] = True
-elif DB_SSL_CA:
+elif DB_SSL_CA_PATH and DB_SSL_CA_PATH.exists():
     DB_CONFIG["ssl_ca"] = DB_SSL_CA
     DB_CONFIG["ssl_verify_cert"] = DB_SSL_VERIFY_CERT
     DB_CONFIG["ssl_verify_identity"] = DB_SSL_VERIFY_IDENTITY

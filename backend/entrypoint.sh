@@ -5,6 +5,7 @@ echo "[entrypoint] Waiting for MySQL..."
 python - <<'PY'
 import os
 import time
+from pathlib import Path
 import mysql.connector
 
 host = os.getenv("DB_HOST", "db")
@@ -15,6 +16,7 @@ ssl_ca = os.getenv("DB_SSL_CA", "").strip()
 ssl_disabled = os.getenv("DB_SSL_DISABLED", "false").strip().lower() == "true"
 ssl_verify_cert = os.getenv("DB_SSL_VERIFY_CERT", "false").strip().lower() == "true"
 ssl_verify_identity = os.getenv("DB_SSL_VERIFY_IDENTITY", "false").strip().lower() == "true"
+ssl_ca_path = Path(ssl_ca) if ssl_ca else None
 
 connect_kwargs = {
     "host": host,
@@ -25,10 +27,12 @@ connect_kwargs = {
 
 if ssl_disabled:
     connect_kwargs["ssl_disabled"] = True
-elif ssl_ca:
+elif ssl_ca_path and ssl_ca_path.exists():
     connect_kwargs["ssl_ca"] = ssl_ca
     connect_kwargs["ssl_verify_cert"] = ssl_verify_cert
     connect_kwargs["ssl_verify_identity"] = ssl_verify_identity
+elif ssl_ca:
+    print(f"[entrypoint] DB_SSL_CA not found, continuing without explicit CA bundle: {ssl_ca}")
 
 deadline = time.time() + 120
 while True:

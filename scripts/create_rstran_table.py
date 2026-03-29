@@ -17,6 +17,10 @@ DB_USER = os.getenv("DB_USER", "root")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "showlang")
 DB_NAME = os.getenv("DB_NAME", "trans_fields_mapping")
 TABLE_NAME = "rstran"
+DB_SSL_CA = os.getenv("DB_SSL_CA", "").strip()
+DB_SSL_DISABLED = os.getenv("DB_SSL_DISABLED", "false").strip().lower() == "true"
+DB_SSL_VERIFY_CERT = os.getenv("DB_SSL_VERIFY_CERT", "false").strip().lower() == "true"
+DB_SSL_VERIFY_IDENTITY = os.getenv("DB_SSL_VERIFY_IDENTITY", "false").strip().lower() == "true"
 
 
 def resolve_template_path() -> Path | None:
@@ -26,6 +30,23 @@ def resolve_template_path() -> Path | None:
     if alt.exists():
         return alt
     return None
+
+
+def build_connect_kwargs() -> dict:
+    connect_kwargs = {
+        "host": DB_HOST,
+        "port": DB_PORT,
+        "user": DB_USER,
+        "password": DB_PASSWORD,
+    }
+    ssl_ca_path = Path(DB_SSL_CA) if DB_SSL_CA else None
+    if DB_SSL_DISABLED:
+        connect_kwargs["ssl_disabled"] = True
+    elif ssl_ca_path and ssl_ca_path.exists():
+        connect_kwargs["ssl_ca"] = DB_SSL_CA
+        connect_kwargs["ssl_verify_cert"] = DB_SSL_VERIFY_CERT
+        connect_kwargs["ssl_verify_identity"] = DB_SSL_VERIFY_IDENTITY
+    return connect_kwargs
 
 
 def build_columns(frame: pd.DataFrame):
@@ -90,12 +111,7 @@ def main():
     frame = pd.read_excel(str(resolved_path))
     ddl = build_columns(frame)
 
-    conn = mysql.connector.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-    )
+    conn = mysql.connector.connect(**build_connect_kwargs())
     cur = conn.cursor()
     cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}` DEFAULT CHARACTER SET utf8mb4")
     cur.execute(ddl)
