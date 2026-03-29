@@ -10,13 +10,14 @@ import hmac
 import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import mysql.connector
 import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from openpyxl import load_workbook
 from pydantic import BaseModel
 
 DB_CONFIG = {
@@ -3726,6 +3727,7 @@ RAW_IMPORT_TABLES = {"rstranstepcnst", "rstransteprout"}
 
 FAST_IMPORT_UPSERT_TABLES = {"dd03l"}
 FAST_IMPORT_SKIP_EXISTING_KEY_SCAN_ROW_THRESHOLD = 20000
+IMPORT_READ_CHUNK_SIZE = max(500, int(os.getenv("IMPORT_READ_CHUNK_SIZE", "4000")))
 
 
 def normalize_import_param(value: object, column_meta: Dict[str, object], table_name: str = "") -> object:
@@ -5762,6 +5764,108 @@ def parse_upload_to_dataframe(
     raise HTTPException(status_code=400, detail="Unsupported file type, only xlsx/xls/csv")
 
 
+def normalize_import_chunk_dataframe(source_df: pd.DataFrame) -> pd.DataFrame:
+    if source_df.empty:
+        return source_df
+    return source_df.fillna("")
+
+
+def iter_csv_upload_chunks(
+    upload_file: UploadFile,
+    header_row_num: int,
+    chunk_size: int = IMPORT_READ_CHUNK_SIZE,
+) -> Iterator[pd.DataFrame]:
+    upload_file.file.seek(0)
+    text_stream = io.TextIOWrapper(upload_file.file, encoding="utf-8-sig", newline="")
+    try:
+        chunk_iter = pd.read_csv(
+            text_stream,
+            dtype=str,
+            header=max(0, int(header_row_num or 1) - 1),
+            chunksize=chunk_size,
+            keep_default_na=False,
+        )
+        for chunk in chunk_iter:
+            normalized = normalize_import_chunk_dataframe(chunk)
+            if not normalized.empty:
+                yield normalized
+    finally:
+        try:
+            text_stream.detach()
+        except Exception:
+            pass
+        upload_file.file.seek(0)
+
+
+def iter_xlsx_upload_chunks(
+    upload_file: UploadFile,
+    sheet_name: str | None,
+    header_row_num: int,
+    chunk_size: int = IMPORT_READ_CHUNK_SIZE,
+) -> Iterator[pd.DataFrame]:
+    upload_file.file.seek(0)
+    workbook = load_workbook(upload_file.file, read_only=True, data_only=True)
+    try:
+        available_sheets = list(workbook.sheetnames or [])
+                default_sheet = available_sheets[0] if available_sheets else ""
+                target_sheet = str(sheet_name or default_sheet).strip()
+        if not target_sheet or target_sheet not in workbook.sheetnames:
+                        raise HTTPException(status_code=400, detail="导入失败：未找到指定的 Sheet。")
+
+        worksheet = workbook[target_sheet]
+        header_values: List[str] | None = None
+        chunk_rows: List[List[str]] = []
+        header_index = max(1, int(header_row_num or 1))
+
+        for row_index, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+            normalized_row = ["" if value is None else str(value) for value in (row or ())]
+            if row_index < header_index:
+                continue
+            if row_index == header_index:
+                header_values = [str(value or "").strip() for value in normalized_row]
+                continue
+            if not any(str(value or "").strip() for value in normalized_row):
+                continue
+            chunk_rows.append(normalized_row)
+            if len(chunk_rows) >= chunk_size:
+                yield pd.DataFrame(chunk_rows, columns=header_values)
+                chunk_rows = []
+
+        if header_values is None:
+            raise ValueError(f"标题行数第{header_row_num}行超出文件有效范围")
+
+        if chunk_rows:
+            yield pd.DataFrame(chunk_rows, columns=header_values)
+    finally:
+        workbook.close()
+        upload_file.file.seek(0)
+
+
+def iter_upload_dataframe_chunks(
+    upload_file: UploadFile,
+    sheet_name: str | None,
+    header_row_num: int = 1,
+    chunk_size: int = IMPORT_READ_CHUNK_SIZE,
+) -> Iterator[pd.DataFrame]:
+    filename = (upload_file.filename or "").lower()
+
+    if filename.endswith(".csv"):
+        yield from iter_csv_upload_chunks(upload_file, header_row_num, chunk_size=chunk_size)
+        return
+
+    if filename.endswith(".xlsx"):
+        yield from iter_xlsx_upload_chunks(upload_file, sheet_name, header_row_num, chunk_size=chunk_size)
+        return
+
+    if filename.endswith(".xls"):
+        source_df = parse_upload_to_dataframe(upload_file, sheet_name, header_row_num)
+        if not source_df.empty:
+            yield source_df
+        return
+
+    raise HTTPException(status_code=400, detail="Unsupported file type, only xlsx/xls/csv")
+
+
 def apply_rstran_logic(mapped_df: pd.DataFrame) -> pd.DataFrame:
     if "SOURCENAME" in mapped_df.columns:
         split_vals = mapped_df["SOURCENAME"].astype(str).str.strip().str.split(r"\s+", n=1, expand=True)
@@ -6297,25 +6401,6 @@ def execute_import(
         raise HTTPException(status_code=400, detail="mapping_json must be an object")
 
     header_row_num = max(1, min(int(header_row_num or 1), 10))
-
-    try:
-        source_df = parse_upload_to_dataframe(file, sheet_name or None, header_row_num)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"导入失败：标题行数第{header_row_num}行超出文件有效范围，请调整后重试。",
-        ) from exc
-
-    if source_df.empty:
-        filename = str(file.filename or "").strip() or "<unknown>"
-        target_sheet = str(sheet_name or "").strip() or "首个Sheet/CSV"
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"导入失败：文件 {filename} 在 {target_sheet}（标题行=第{header_row_num}行）未读取到可导入数据行。"
-                "请确认文件包含表头且至少有 1 行数据，并检查是否选对了 Sheet。"
-            ),
-        )
     schema_rows = get_table_schema(table_name)
     db_columns = [str(item.get("name") or "").strip() for item in schema_rows if str(item.get("name") or "").strip()]
     if not db_columns:
@@ -6326,43 +6411,6 @@ def execute_import(
         for col_name, source_field in mapping.items()
         if str(col_name or "").strip() in schema_map and str(source_field or "").strip()
     }
-
-    mapped_df = pd.DataFrame()
-    for col in db_columns:
-        column_meta = schema_map.get(col, {})
-        source_field = mapping.get(col, "")
-        if isinstance(source_field, str) and source_field.startswith("__LOGIC_"):
-            mapped_df[col] = [get_import_fallback_value(column_meta)] * len(source_df.index)
-        elif isinstance(source_field, str) and source_field.startswith("__FIXED__:"):
-            mapped_df[col] = source_field.replace("__FIXED__:", "", 1)
-        elif source_field in source_df.columns:
-            mapped_df[col] = source_df[source_field] if table_name in RAW_IMPORT_TABLES else source_df[source_field].astype(str)
-        else:
-            mapped_df[col] = [get_import_fallback_value(column_meta)] * len(source_df.index)
-
-    if table_name == "rstran":
-        mapped_df = apply_rstran_logic(mapped_df)
-
-    mapped_df = mapped_df.astype(object).where(pd.notna(mapped_df), None)
-
-    if table_name not in RAW_IMPORT_TABLES:
-        ensure_import_text_capacity(table_name, schema_rows, mapped_df)
-    schema_rows = get_table_schema(table_name)
-    schema_map = {str(item.get("name") or "").strip(): item for item in schema_rows}
-
-    rows = [
-        tuple(normalize_import_param(row[col], schema_map.get(col, {}), table_name=table_name) for col in db_columns)
-        for _, row in mapped_df.iterrows()
-    ]
-    if not rows:
-        raise HTTPException(status_code=400, detail="No rows to import")
-
-    if table_name not in RAW_IMPORT_TABLES:
-        ensure_import_row_text_capacity(table_name, schema_rows, db_columns, rows)
-    schema_rows = get_table_schema(table_name)
-    schema_map = {str(item.get("name") or "").strip(): item for item in schema_rows}
-
-    excel_count = len(rows)
     key_fields = get_primary_keys(table_name)
     if not key_fields:
         raise HTTPException(status_code=400, detail=f"导入失败：表 {table_name} 未配置可用于更新的键字段")
@@ -6383,23 +6431,57 @@ def execute_import(
     else:
         # Fallback for key-only tables: perform a no-op update expression.
         first_key = key_fields[0]
-        set_sql = f"`{first_key}` = `{first_key}`"
         upsert_set_sql = f"`{first_key}` = `{first_key}`"
-    where_sql = " AND ".join(f"`{k}` <=> %s" for k in key_fields)
-    update_sql = f"UPDATE `{table_name}` SET {set_sql} WHERE {where_sql}"
     upsert_sql = f"{insert_sql} ON DUPLICATE KEY UPDATE {upsert_set_sql}"
     inserted_count = 0
     updated_count = 0
     db_count = 0
     affected = 0
 
-    def execute_import_write() -> Tuple[int, int, int, int]:
+    def build_rows_from_source_df(source_df: pd.DataFrame, current_schema_rows: List[Dict[str, object]]) -> Tuple[List[Tuple[object, ...]], List[Dict[str, object]]]:
+        current_schema_map = {str(item.get("name") or "").strip(): item for item in current_schema_rows}
+        mapped_df = pd.DataFrame(index=source_df.index)
+
+        for col in db_columns:
+            column_meta = current_schema_map.get(col, {})
+            source_field = mapping.get(col, "")
+            if isinstance(source_field, str) and source_field.startswith("__LOGIC_"):
+                mapped_df[col] = [get_import_fallback_value(column_meta)] * len(source_df.index)
+            elif isinstance(source_field, str) and source_field.startswith("__FIXED__:"):
+                mapped_df[col] = source_field.replace("__FIXED__:", "", 1)
+            elif source_field in source_df.columns:
+                mapped_df[col] = source_df[source_field] if table_name in RAW_IMPORT_TABLES else source_df[source_field].astype(str)
+            else:
+                mapped_df[col] = [get_import_fallback_value(column_meta)] * len(source_df.index)
+
+        if table_name == "rstran":
+            mapped_df = apply_rstran_logic(mapped_df)
+
+        mapped_df = mapped_df.astype(object).where(pd.notna(mapped_df), None)
+
+        if table_name not in RAW_IMPORT_TABLES:
+            ensure_import_text_capacity(table_name, current_schema_rows, mapped_df)
+            current_schema_rows = get_table_schema(table_name)
+            current_schema_map = {str(item.get("name") or "").strip(): item for item in current_schema_rows}
+
+        rows = [
+            tuple(normalize_import_param(row[col], current_schema_map.get(col, {}), table_name=table_name) for col in db_columns)
+            for _, row in mapped_df.iterrows()
+        ]
+
+        if rows and table_name not in RAW_IMPORT_TABLES:
+            ensure_import_row_text_capacity(table_name, current_schema_rows, db_columns, rows)
+            current_schema_rows = get_table_schema(table_name)
+
+        return rows, current_schema_rows
+
+    def execute_import_write(rows_batch: List[Tuple[object, ...]]) -> Tuple[int, int, int, int]:
         conn = get_conn()
         cur = conn.cursor()
         try:
-            fast_upsert_mode = table_name in FAST_IMPORT_UPSERT_TABLES and len(rows) >= FAST_IMPORT_SKIP_EXISTING_KEY_SCAN_ROW_THRESHOLD
+            fast_upsert_mode = table_name in FAST_IMPORT_UPSERT_TABLES or len(rows_batch) >= FAST_IMPORT_SKIP_EXISTING_KEY_SCAN_ROW_THRESHOLD
             write_batch_size = 2000 if fast_upsert_mode else 500
-            row_dicts = [dict(zip(db_columns, row)) for row in rows]
+            row_dicts = [dict(zip(db_columns, row)) for row in rows_batch]
             key_tuples = [tuple(row_dict[k] for k in key_fields) for row_dict in row_dicts]
             distinct_key_count = len(set(key_tuples))
 
@@ -6442,13 +6524,13 @@ def execute_import(
                         local_inserted_count += 1
                         seen_keys.add(key_values)
 
-            if rows:
+            if rows_batch:
                 if table_name in RAW_IMPORT_TABLES:
-                    for row in rows:
+                    for row in rows_batch:
                         cur.execute(upsert_sql, row)
                 else:
-                    for start in range(0, len(rows), write_batch_size):
-                        cur.executemany(upsert_sql, rows[start:start + write_batch_size])
+                    for start in range(0, len(rows_batch), write_batch_size):
+                        cur.executemany(upsert_sql, rows_batch[start:start + write_batch_size])
 
             cur.execute(f"SELECT COUNT(*) FROM `{table_name}`")
             local_db_count = int(cur.fetchone()[0])
@@ -6476,29 +6558,7 @@ def execute_import(
             except Exception:
                 pass
 
-    try:
-        inserted_count, updated_count, db_count, affected = execute_import_write()
-    except mysql.connector.Error as exc:
-        if exc.errno == 1406:
-            exc_text = str(exc.msg or exc)
-            col_match = re.search(r"column '([^']+)'", exc_text, flags=re.IGNORECASE)
-            offending_column = str(col_match.group(1) if col_match else "").strip()
-            if offending_column:
-                schema_rows = get_table_schema(table_name)
-                ensure_import_row_text_capacity(table_name, schema_rows, db_columns, rows, only_columns={offending_column})
-                schema_rows = get_table_schema(table_name)
-                schema_map = {str(item.get("name") or "").strip(): item for item in schema_rows}
-                try:
-                    inserted_count, updated_count, db_count, affected = execute_import_write()
-                except mysql.connector.Error as retry_exc:
-                    exc = retry_exc
-                else:
-                    exc = None
-            if exc is None:
-                pass
-            else:
-                detail = f"导入失败：字段长度超出数据库定义。数据库返回：{exc.msg}"
-                raise HTTPException(status_code=400, detail=detail) from exc
+    def raise_import_mysql_error(exc: mysql.connector.Error) -> None:
         if exc.errno == 1062:
             detail = "导入失败：检测到重复键值数据。已回滚到导入前数据，请去重后重新导入。"
         elif exc.errno == 1048:
@@ -6508,9 +6568,66 @@ def execute_import(
             detail = f"导入失败：字段 {col_name} 不能为 NULL（当前数据库表结构限制）。请检查表结构或改为空字符串后重试。"
         elif exc.errno == 1366:
             detail = f"导入失败：字段值与数据库类型不兼容。数据库返回：{exc.msg}"
+        elif exc.errno == 1406:
+            detail = f"导入失败：字段长度超出数据库定义。数据库返回：{exc.msg}"
         else:
             detail = f"导入失败，已回滚到导入前数据。数据库返回：{exc.msg}"
         raise HTTPException(status_code=400, detail=detail) from exc
+
+    filename = str(file.filename or "").strip() or "<unknown>"
+    target_sheet = str(sheet_name or "").strip() or "首个Sheet/CSV"
+    excel_count = 0
+    chunk_seen = False
+    current_schema_rows = schema_rows
+
+    try:
+        for source_df in iter_upload_dataframe_chunks(file, sheet_name or None, header_row_num, chunk_size=IMPORT_READ_CHUNK_SIZE):
+            if source_df.empty:
+                continue
+            chunk_seen = True
+            rows, current_schema_rows = build_rows_from_source_df(source_df, current_schema_rows)
+            if not rows:
+                continue
+
+            excel_count += len(rows)
+
+            try:
+                chunk_inserted, chunk_updated, db_count, chunk_affected = execute_import_write(rows)
+            except mysql.connector.Error as exc:
+                if exc.errno == 1406:
+                    exc_text = str(exc.msg or exc)
+                    col_match = re.search(r"column '([^']+)'", exc_text, flags=re.IGNORECASE)
+                    offending_column = str(col_match.group(1) if col_match else "").strip()
+                    if offending_column:
+                        current_schema_rows = get_table_schema(table_name)
+                        ensure_import_row_text_capacity(table_name, current_schema_rows, db_columns, rows, only_columns={offending_column})
+                        current_schema_rows = get_table_schema(table_name)
+                        try:
+                            chunk_inserted, chunk_updated, db_count, chunk_affected = execute_import_write(rows)
+                        except mysql.connector.Error as retry_exc:
+                            raise_import_mysql_error(retry_exc)
+                    else:
+                        raise_import_mysql_error(exc)
+                else:
+                    raise_import_mysql_error(exc)
+
+            inserted_count += chunk_inserted
+            updated_count += chunk_updated
+            affected += chunk_affected
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"导入失败：标题行数第{header_row_num}行超出文件有效范围，请调整后重试。",
+        ) from exc
+
+    if not chunk_seen or excel_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"导入失败：文件 {filename} 在 {target_sheet}（标题行=第{header_row_num}行）未读取到可导入数据行。"
+                "请确认文件包含表头且至少有 1 行数据，并检查是否选对了 Sheet。"
+            ),
+        )
 
     status = upsert_status(table_name, count_table_rows(table_name))
     return {
