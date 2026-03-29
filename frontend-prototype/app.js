@@ -400,6 +400,7 @@
   let appLoadingDepth = 0;
   let activeWorkbenchCard = null;
   const LARGE_IMPORT_CSV_CHUNK_ROWS = 5000;
+  let importCardRefreshDepth = 0;
 
   let currentUser = null;
   let authStateEpoch = 0;
@@ -2179,6 +2180,26 @@
 
   function getImportCardElement(tableName) {
     return importCardElements[String(tableName || "").trim().toLowerCase()] || null;
+  }
+
+  function setAllImportCardsLoading(isBusy, label = "正在刷新导入状态...") {
+    importCards.forEach((card) => {
+      setWorkbenchCardLoading(card, isBusy, label);
+    });
+  }
+
+  async function withImportCardsRefreshLoading(label, runner) {
+    importCardRefreshDepth += 1;
+    setAllImportCardsLoading(true, label);
+    await waitForNextPaint();
+    try {
+      return await runner();
+    } finally {
+      importCardRefreshDepth = Math.max(0, importCardRefreshDepth - 1);
+      if (importCardRefreshDepth === 0) {
+        setAllImportCardsLoading(false);
+      }
+    }
   }
 
   function resetImportProgress() {
@@ -4172,7 +4193,9 @@
       uploadWorkspace.classList.toggle("hidden", !isImport);
     }
     if (isImport) {
-      void ensureImportCardTimesLoaded();
+      if (!importStatusLoadedOnce || importStatusLoadPromise) {
+        void withImportCardsRefreshLoading("正在刷新导入状态...", async () => ensureImportCardTimesLoaded());
+      }
     }
     if (isDataQuery) {
       void hydrateDataQueryWorkspace();
@@ -7101,6 +7124,46 @@
     }
 
     return resp.json();
+  }
+
+  async function executeChunkedCsvImport({ tableName, mapping, file, duplicateMode = "fail", headerRowNum = getHeaderRowNumber() }) {
+    const chunks = await buildChunkedCsvFiles(file, headerRowNum, LARGE_IMPORT_CSV_CHUNK_ROWS);
+    if (!chunks.length) {
+      throw new Error("文件未读取到可导入数据行。请确认有表头并至少包含1行数据。");
+    }
+
+    const summary = {
+      table_name: tableName,
+      affected_rows: 0,
+      inserted_rows: 0,
+      updated_rows: 0,
+      db_count: 0
+    };
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const percent = Math.min(96, 8 + ((index / chunks.length) * 88));
+      setImportProgressValue(percent, `正在上传第 ${index + 1}/${chunks.length} 批数据...`);
+      try {
+        const result = await executeSingleImportRequest({
+          tableName,
+          mapping,
+          sheetName: "",
+          file: chunks[index],
+          duplicateMode,
+          headerRowNum: 1
+        });
+        summary.affected_rows += Number(result?.affected_rows ?? 0);
+        summary.inserted_rows += Number(result?.inserted_rows ?? 0);
+        summary.updated_rows += Number(result?.updated_rows ?? 0);
+        summary.db_count = Number(result?.db_count ?? summary.db_count ?? 0);
+      } catch (error) {
+        const message = String(error?.message || "").trim() || "未知错误";
+        throw new Error(`第 ${index + 1}/${chunks.length} 批导入失败。${summary.affected_rows > 0 ? `此前已处理 ${formatCount(summary.affected_rows)} 条。` : ""}${message}`);
+      }
+    }
+
+    setImportProgressValue(98, `全部 ${chunks.length} 批已上传，正在完成收尾...`);
+    return summary;
   }
 
   async function executeChunkedCsvImport({ tableName, mapping, file, duplicateMode = "fail", headerRowNum = getHeaderRowNumber() }) {

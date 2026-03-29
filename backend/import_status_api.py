@@ -26,6 +26,9 @@ DB_CONFIG = {
     "user": os.getenv("DB_USER", "root"),
     "password": os.getenv("DB_PASSWORD", "showlang"),
     "database": os.getenv("DB_NAME", "trans_fields_mapping"),
+    "connection_timeout": int(os.getenv("DB_CONNECTION_TIMEOUT", "60")),
+    "read_timeout": int(os.getenv("DB_READ_TIMEOUT", "3600")),
+    "write_timeout": int(os.getenv("DB_WRITE_TIMEOUT", "3600")),
 }
 
 DB_SSL_CA = str(os.getenv("DB_SSL_CA", "")).strip()
@@ -3727,7 +3730,8 @@ RAW_IMPORT_TABLES = {"rstranstepcnst", "rstransteprout"}
 
 FAST_IMPORT_UPSERT_TABLES = {"dd03l"}
 FAST_IMPORT_SKIP_EXISTING_KEY_SCAN_ROW_THRESHOLD = 20000
-IMPORT_READ_CHUNK_SIZE = max(500, int(os.getenv("IMPORT_READ_CHUNK_SIZE", "4000")))
+IMPORT_READ_CHUNK_SIZE = max(250, int(os.getenv("IMPORT_READ_CHUNK_SIZE", "2000")))
+DD03L_FAST_WRITE_BATCH_SIZE = max(100, int(os.getenv("DD03L_FAST_WRITE_BATCH_SIZE", "200")))
 
 
 def normalize_import_param(value: object, column_meta: Dict[str, object], table_name: str = "") -> object:
@@ -5807,10 +5811,10 @@ def iter_xlsx_upload_chunks(
     workbook = load_workbook(upload_file.file, read_only=True, data_only=True)
     try:
         available_sheets = list(workbook.sheetnames or [])
-                default_sheet = available_sheets[0] if available_sheets else ""
-                target_sheet = str(sheet_name or default_sheet).strip()
+        default_sheet = available_sheets[0] if available_sheets else ""
+        target_sheet = str(sheet_name or default_sheet).strip()
         if not target_sheet or target_sheet not in workbook.sheetnames:
-                        raise HTTPException(status_code=400, detail="导入失败：未找到指定的 Sheet。")
+            raise HTTPException(status_code=400, detail="导入失败：未找到指定的 Sheet。")
 
         worksheet = workbook[target_sheet]
         header_values: List[str] | None = None
@@ -6480,7 +6484,10 @@ def execute_import(
         cur = conn.cursor()
         try:
             fast_upsert_mode = table_name in FAST_IMPORT_UPSERT_TABLES or len(rows_batch) >= FAST_IMPORT_SKIP_EXISTING_KEY_SCAN_ROW_THRESHOLD
-            write_batch_size = 2000 if fast_upsert_mode else 500
+            if table_name == "dd03l":
+                write_batch_size = DD03L_FAST_WRITE_BATCH_SIZE
+            else:
+                write_batch_size = 2000 if fast_upsert_mode else 500
             row_dicts = [dict(zip(db_columns, row)) for row in rows_batch]
             key_tuples = [tuple(row_dict[k] for k in key_fields) for row_dict in row_dicts]
             distinct_key_count = len(set(key_tuples))
