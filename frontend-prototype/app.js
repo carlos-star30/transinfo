@@ -4226,9 +4226,11 @@
   async function fetchPathMapping(segments, options = {}) {
     const includeLogic = Boolean(options?.includeLogic);
     const includeText = Boolean(options?.includeText);
+    const timeoutMs = includeLogic || includeText ? 120000 : 90000;
     const resp = await apiFetch(`${importStatusApiBase}/path-selection/mapping`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      timeoutMs,
       body: JSON.stringify({
         segments,
         include_logic: includeLogic,
