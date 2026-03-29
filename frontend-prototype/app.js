@@ -398,6 +398,7 @@
   ].filter((entry) => entry.modal && entry.shell);
   let modalZIndexSeed = 2000;
   let appLoadingDepth = 0;
+  let activeWorkbenchCard = null;
 
   let currentUser = null;
   let authStateEpoch = 0;
@@ -655,6 +656,13 @@
     if (!modal) return;
     modalZIndexSeed += 1;
     modal.style.zIndex = String(modalZIndexSeed);
+  }
+
+  function syncAppLoadingZIndex() {
+    if (!appLoadingOverlay) return;
+    const topEntry = getTopBlockingModalEntry();
+    const topModalZIndex = topEntry ? Number.parseInt(window.getComputedStyle(topEntry.modal).zIndex || "0", 10) || 0 : 0;
+    appLoadingOverlay.style.zIndex = String(Math.max(3200, modalZIndexSeed + 2, topModalZIndex + 2));
   }
 
   function showBlockingModal(modal) {
@@ -1128,6 +1136,7 @@
 
   const importSchemas = {};
   const importSchemaMeta = {};
+  const importSchemaPromises = {};
 
   const logicManagedFields = {
     rstran: {
@@ -1955,9 +1964,15 @@
     if (appLoadingText) {
       appLoadingText.textContent = String(text || "处理中...").trim() || "处理中...";
     }
+    if (isBusy) {
+      syncAppLoadingZIndex();
+    }
     appLoadingOverlay.classList.toggle("hidden", !isBusy);
     appLoadingOverlay.setAttribute("aria-hidden", isBusy ? "false" : "true");
     document.body.classList.toggle("has-app-loading", !!isBusy);
+    if (!isBusy) {
+      appLoadingOverlay.style.removeProperty("z-index");
+    }
   }
 
   function waitForNextPaint() {
@@ -2111,6 +2126,60 @@
     }
   }
 
+  function ensureWorkbenchCardBusyOverlay(card) {
+    if (!card) return null;
+    let overlay = card.querySelector(".import-card-busy-overlay");
+    if (overlay) return overlay;
+
+    overlay = document.createElement("span");
+    overlay.className = "import-card-busy-overlay";
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.innerHTML = `
+      <span class="import-card-busy-spinner"></span>
+      <span class="import-card-busy-text">处理中...</span>
+    `;
+    card.appendChild(overlay);
+    return overlay;
+  }
+
+  function setWorkbenchCardSelected(card) {
+    if (activeWorkbenchCard && activeWorkbenchCard !== card) {
+      activeWorkbenchCard.classList.remove("is-selected");
+    }
+    activeWorkbenchCard = card || null;
+    if (activeWorkbenchCard) {
+      activeWorkbenchCard.classList.add("is-selected");
+    }
+  }
+
+  function setWorkbenchCardLoading(card, isBusy, label = "处理中...") {
+    if (!card) return;
+    const overlay = ensureWorkbenchCardBusyOverlay(card);
+    const textNode = overlay?.querySelector(".import-card-busy-text");
+    if (textNode) {
+      textNode.textContent = String(label || "处理中...").trim() || "处理中...";
+    }
+    card.classList.toggle("is-loading", !!isBusy);
+    card.setAttribute("aria-busy", isBusy ? "true" : "false");
+  }
+
+  async function withWorkbenchCardLoading(card, label, runner) {
+    if (!card) {
+      return runner();
+    }
+    setWorkbenchCardLoading(card, true, label);
+    await waitForNextPaint();
+    try {
+      return await runner();
+    } finally {
+      setWorkbenchCardLoading(card, false);
+    }
+  }
+
+  function getImportCardElement(tableName) {
+    return importCardElements[String(tableName || "").trim().toLowerCase()] || null;
+  }
+
   function resetImportProgress() {
     clearImportProgressTimer();
     importProgressValue = 0;
@@ -2124,6 +2193,7 @@
   }
 
   function setImportBusyState(isBusy, label = "处理中...") {
+    setWorkbenchCardLoading(getImportCardElement(activeImportTable), isBusy, label);
     if (importModalShell) {
       importModalShell.classList.toggle("is-busy", isBusy);
     }
@@ -6962,12 +7032,22 @@
     if (Array.isArray(importSchemas[normalized]) && importSchemas[normalized].length) {
       return importSchemas[normalized];
     }
+    if (importSchemaPromises[normalized]) {
+      return importSchemaPromises[normalized];
+    }
 
-    const payload = await fetchImportSchema(normalized);
-    const columns = Array.isArray(payload?.columns) ? payload.columns : [];
-    importSchemas[normalized] = columns.map((column) => String(column?.name || "").trim()).filter(Boolean);
-    importSchemaMeta[normalized] = columns;
-    return importSchemas[normalized];
+    importSchemaPromises[normalized] = fetchImportSchema(normalized)
+      .then((payload) => {
+        const columns = Array.isArray(payload?.columns) ? payload.columns : [];
+        importSchemas[normalized] = columns.map((column) => String(column?.name || "").trim()).filter(Boolean);
+        importSchemaMeta[normalized] = columns;
+        return importSchemas[normalized];
+      })
+      .finally(() => {
+        delete importSchemaPromises[normalized];
+      });
+
+    return importSchemaPromises[normalized];
   }
 
   async function markImportUpdated(tableName) {
@@ -7359,13 +7439,14 @@
 
   async function openImportModal(tableName) {
     activeImportTable = tableName;
+    setWorkbenchCardSelected(getImportCardElement(tableName));
     await ensureImportSchema(tableName);
     activeExcelHeaders = [];
     activeImportDataRowCount = 0;
     activeHeaderRowNumber = 1;
     importTaskLock = false;
     resetImportProgress();
-    const matchedCard = importCards.find((card) => card.dataset.table === tableName);
+    const matchedCard = getImportCardElement(tableName);
     const displayTitle = matchedCard?.dataset.title || tableName;
     importModalTitle.textContent = `字段映射 - ${displayTitle}`;
     if (confirmImportBtn) {
@@ -7419,13 +7500,14 @@
         if (!confirmed) return;
 
         try {
+          setWorkbenchCardSelected(rebuildRstranMappingRuleBtn);
           mappingRuleRebuildLock = true;
           rebuildRstranMappingRuleBtn.disabled = true;
           if (rebuildRstranMappingRuleBtnTitle) {
             rebuildRstranMappingRuleBtnTitle.textContent = "重建中...";
           }
 
-          const result = await withAppLoading("正在重建字段规则表...", async () => rebuildRstranMappingRuleTable());
+          const result = await withWorkbenchCardLoading(rebuildRstranMappingRuleBtn, "正在重建字段规则表...", async () => withAppLoading("正在重建字段规则表...", async () => rebuildRstranMappingRuleTable()));
           const insertedRows = Number(result?.inserted_rows ?? 0);
           const tranCount = Number(result?.tran_count ?? 0);
           const totalRows = Number(result?.db_count ?? 0);
@@ -7468,13 +7550,14 @@
         if (!confirmed) return;
 
         try {
+          setWorkbenchCardSelected(rebuildRstranMappingRuleFullBtn);
           mappingRuleRebuildLock = true;
           rebuildRstranMappingRuleFullBtn.disabled = true;
           if (rebuildRstranMappingRuleFullBtnTitle) {
             rebuildRstranMappingRuleFullBtnTitle.textContent = "重建中...";
           }
 
-          const result = await withAppLoading("正在重建完整字段表...", async () => rebuildRstranMappingRuleFullTable());
+          const result = await withWorkbenchCardLoading(rebuildRstranMappingRuleFullBtn, "正在重建完整字段表...", async () => withAppLoading("正在重建完整字段表...", async () => rebuildRstranMappingRuleFullTable()));
           const insertedRows = Number(result?.inserted_rows ?? 0);
           const tranCount = Number(result?.tran_count ?? 0);
           const mappedRows = Number(result?.mapped_rows ?? 0);
@@ -7510,22 +7593,22 @@
     }
 
     importCards.forEach((card) => {
-      card.addEventListener("click", () => {
+      card.addEventListener("click", async () => {
         const tableName = String(card.dataset.table || "").trim().toLowerCase();
         const ready = card.dataset.importReady !== "false";
+        setWorkbenchCardSelected(card);
         if (!ready || !importSchemas[tableName]) {
           if (!ready) {
             showToast(`${card.dataset.title || tableName} 导入映射下一步接入。`, "success");
             return;
           }
         }
-        Promise.resolve()
-          .then(() => ensureImportSchema(tableName))
-          .then(() => openImportModal(tableName))
-          .catch((error) => {
-            const rawMsg = String(error?.message || "").trim();
-            showToast(`读取 ${card.dataset.title || tableName} 表结构失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
-          });
+        try {
+          await withWorkbenchCardLoading(card, "正在准备字段映射...", async () => openImportModal(tableName));
+        } catch (error) {
+          const rawMsg = String(error?.message || "").trim();
+          showToast(`读取 ${card.dataset.title || tableName} 表结构失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
+        }
       });
     });
 

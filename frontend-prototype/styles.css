@@ -2616,6 +2616,7 @@ body.data-query-panel-maximized::after {
 
 .import-card {
   position: relative;
+  isolation: isolate;
   text-align: left;
   padding: 14px 16px;
   border-radius: 16px;
@@ -2626,6 +2627,11 @@ body.data-query-panel-maximized::after {
   box-shadow: none;
   overflow: hidden;
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.import-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .import-card::before {
@@ -2646,6 +2652,81 @@ body.data-query-panel-maximized::after {
 
 .import-card:hover {
   transform: translateY(-1px);
+}
+
+.import-card.is-selected {
+  border-color: rgba(125, 228, 191, 0.78);
+  background:
+    linear-gradient(180deg, rgba(85, 211, 169, 0.14), rgba(15, 44, 37, 0.22)),
+    rgba(255, 255, 255, 0.05);
+  box-shadow: 0 0 0 1px rgba(129, 236, 198, 0.24), 0 16px 34px rgba(6, 18, 27, 0.22), inset 0 0 0 1px rgba(157, 243, 213, 0.12);
+}
+
+.import-card.is-selected .import-card-title {
+  color: #effff7;
+}
+
+.import-card.is-selected .import-card-sub,
+.import-card.is-selected .import-card-time {
+  color: rgba(226, 245, 236, 0.9);
+}
+
+.import-card.is-loading {
+  cursor: wait;
+}
+
+.import-card.is-loading:hover {
+  transform: none;
+}
+
+.import-card.is-loading > :not(.import-card-busy-overlay) {
+  opacity: 0.34;
+  filter: blur(1px);
+}
+
+.import-card-busy-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: 16px;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 50% 24%, rgba(181, 233, 255, 0.2), transparent 44%),
+    linear-gradient(145deg, rgba(12, 23, 35, 0.58), rgba(8, 18, 30, 0.72));
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 160ms ease, visibility 160ms ease;
+  pointer-events: none;
+}
+
+.import-card.is-loading .import-card-busy-overlay {
+  opacity: 1;
+  visibility: visible;
+}
+
+.import-card-busy-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 3px solid rgba(219, 239, 252, 0.28);
+  border-top-color: rgba(158, 246, 255, 0.98);
+  border-right-color: rgba(113, 214, 255, 0.94);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 18px rgba(109, 211, 255, 0.22);
+  animation: modal-spinner-rotate 0.85s linear infinite;
+}
+
+.import-card-busy-text {
+  max-width: 100%;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(245, 251, 255, 0.98);
+  text-shadow: 0 1px 4px rgba(15, 28, 44, 0.34);
 }
 
 .import-card.is-imported {
@@ -3872,7 +3953,7 @@ body.modal-open {
 .app-loading-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1200;
+  z-index: 3200;
   display: grid;
   place-items: center;
   pointer-events: auto;
