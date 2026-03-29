@@ -1,0 +1,8 @@
+CREATE INDEX IF NOT EXISTS idx_rstranfield_path_lookup
+ON rstranfield (TRANID, OBJVERS, PARAMTYPE, RULEID, STEPID, SEGID, FIELDNM);
+
+CREATE INDEX IF NOT EXISTS idx_rsdssegfd_transfer_lookup
+ON rsdssegfd (OBJVERS, TRANSFER, DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM);
+
+CREATE INDEX IF NOT EXISTS idx_rsksfieldnew_path_lookup
+ON rsksfieldnew (OBJVERS, ISOURCE, IOBJNM, FIELDNM);

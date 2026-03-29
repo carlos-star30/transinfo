@@ -4210,6 +4210,7 @@
     const resp = await apiFetch(`${importStatusApiBase}/path-selection/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      timeoutMs: 60000,
       body: JSON.stringify({
         source_name: sourceName,
         source_system: sourceSystem,

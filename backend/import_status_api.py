@@ -1613,24 +1613,66 @@ def fetch_active_tran_metadata() -> Dict[str, Dict[str, str]]:
 
 
 def fetch_rsds_field_inventory() -> Dict[Tuple[str, str], Dict[str, Dict[str, object]]]:
+    return fetch_rsds_field_inventory_for_pairs(None)
+
+
+def fetch_rsds_field_inventory_for_pairs(
+    datasource_pairs: List[Tuple[str, str]] | None,
+) -> Dict[Tuple[str, str], Dict[str, Dict[str, object]]]:
     if not table_exists("rsdssegfd"):
         return {}
+
+    normalized_pairs: List[Tuple[str, str]] = []
+    if datasource_pairs is not None:
+        seen_pairs: Set[Tuple[str, str]] = set()
+        for datasource, logsys in datasource_pairs:
+            normalized_datasource = normalize_bw_object_lookup(datasource)
+            normalized_logsys = normalize_bw_object_lookup(logsys)
+            if not normalized_datasource or not normalized_logsys:
+                continue
+            pair = (normalized_datasource, normalized_logsys)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            normalized_pairs.append(pair)
+        if not normalized_pairs:
+            return {}
 
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
-        cur.execute(
-            """
-            SELECT DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM, KEYFIELD
-            FROM rsdssegfd
-            WHERE OBJVERS = 'A'
-              AND COALESCE(TRIM(TRANSFER), '') = 'X'
-            ORDER BY DATASOURCE, LOGSYS,
-                     CAST(COALESCE(NULLIF(TRIM(SEGID), ''), '0') AS UNSIGNED),
-                     CAST(COALESCE(NULLIF(TRIM(POSIT), ''), '0') AS UNSIGNED),
-                     FIELDNM
-            """
-        )
+        if normalized_pairs:
+            pair_conditions = " OR ".join(["(DATASOURCE = %s AND LOGSYS = %s)"] * len(normalized_pairs))
+            params: List[str] = []
+            for datasource, logsys in normalized_pairs:
+                params.extend([datasource, logsys])
+            cur.execute(
+                f"""
+                SELECT DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM, KEYFIELD
+                FROM rsdssegfd
+                WHERE OBJVERS = 'A'
+                  AND TRANSFER = 'X'
+                  AND ({pair_conditions})
+                ORDER BY DATASOURCE, LOGSYS,
+                         CAST(COALESCE(NULLIF(TRIM(SEGID), ''), '0') AS UNSIGNED),
+                         CAST(COALESCE(NULLIF(TRIM(POSIT), ''), '0') AS UNSIGNED),
+                         FIELDNM
+                """,
+                tuple(params),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM, KEYFIELD
+                FROM rsdssegfd
+                WHERE OBJVERS = 'A'
+                  AND TRANSFER = 'X'
+                ORDER BY DATASOURCE, LOGSYS,
+                         CAST(COALESCE(NULLIF(TRIM(SEGID), ''), '0') AS UNSIGNED),
+                         CAST(COALESCE(NULLIF(TRIM(POSIT), ''), '0') AS UNSIGNED),
+                         FIELDNM
+                """
+            )
         rows = cur.fetchall()
     finally:
         cur.close()
@@ -1850,10 +1892,19 @@ def build_dd03l_object_inventory(rows: List[Dict[str, object]], rsiobj_names: Se
 
 
 def fetch_rsoadso_activate_data_by_object(object_names: List[str]) -> Dict[str, str]:
-    if not object_names or not table_exists("rsoadso"):
+    normalized_objects = []
+    seen_objects: Set[str] = set()
+    for object_name in object_names:
+        normalized_name = normalize_bw_object_lookup(object_name)
+        if not normalized_name or normalized_name in seen_objects:
+            continue
+        seen_objects.add(normalized_name)
+        normalized_objects.append(normalized_name)
+
+    if not normalized_objects or not table_exists("rsoadso"):
         return {}
 
-    placeholders = ", ".join(["%s"] * len(object_names))
+    placeholders = ", ".join(["%s"] * len(normalized_objects))
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
@@ -1862,9 +1913,9 @@ def fetch_rsoadso_activate_data_by_object(object_names: List[str]) -> Dict[str, 
             SELECT ADSONM, ACTIVATE_DATA
             FROM rsoadso
             WHERE OBJVERS = 'A'
-              AND UPPER(TRIM(ADSONM)) IN ({placeholders})
+                            AND ADSONM IN ({placeholders})
             """,
-            object_names,
+                        tuple(normalized_objects),
         )
         rows = cur.fetchall()
     finally:
@@ -1880,7 +1931,73 @@ def fetch_rsoadso_activate_data_by_object(object_names: List[str]) -> Dict[str, 
     return activate_data_by_object
 
 
-def fetch_adso_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, Dict[str, Dict[str, object]]]:
+def build_dd03l_object_tabname_candidates(
+    object_names: List[str],
+    suffixes_by_object: Dict[str, Set[str]] | None = None,
+) -> Dict[str, List[str]]:
+    candidates_by_object: Dict[str, List[str]] = {}
+    resolved_suffixes_by_object = suffixes_by_object or {}
+    for object_name in object_names:
+        normalized_name = normalize_bw_object_lookup(object_name)
+        if not normalized_name:
+            continue
+        suffixes = resolved_suffixes_by_object.get(normalized_name) or {"1", "2"}
+        table_names: List[str] = []
+        seen: Set[str] = set()
+        for suffix in suffixes:
+            normalized_suffix = str(suffix or "").strip()
+            if normalized_suffix not in {"1", "2"}:
+                continue
+            table_name = f"/BIC/A{normalized_name}{normalized_suffix}"
+            if table_name in seen:
+                continue
+            seen.add(table_name)
+            table_names.append(table_name)
+        if table_names:
+            candidates_by_object[normalized_name] = table_names
+    return candidates_by_object
+
+
+def fetch_dd03l_rows_for_tabnames(tabnames: List[str]) -> List[Dict[str, object]]:
+    normalized_tabnames = []
+    seen_tabnames: Set[str] = set()
+    for tabname in tabnames:
+        normalized_tabname = str(tabname or "").strip().upper()
+        if not normalized_tabname or normalized_tabname in seen_tabnames:
+            continue
+        seen_tabnames.add(normalized_tabname)
+        normalized_tabnames.append(normalized_tabname)
+
+    if not normalized_tabnames or not table_exists("dd03l"):
+        return []
+
+    placeholders = ", ".join(["%s"] * len(normalized_tabnames))
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT TABNAME, POSITION, FIELDNAME, KEYFLAG
+            FROM dd03l
+            WHERE AS4LOCAL = 'A'
+              AND TABNAME IN ({placeholders})
+            ORDER BY TABNAME,
+                     CAST(COALESCE(NULLIF(TRIM(POSITION), ''), '0') AS UNSIGNED),
+                     FIELDNAME
+            """,
+            tuple(normalized_tabnames),
+        )
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def fetch_adso_field_inventory_from_dd03l(
+    object_names: List[str],
+    activate_data_by_object: Dict[str, str] | None = None,
+    rsiobj_names: Set[str] | None = None,
+) -> Dict[str, Dict[str, Dict[str, object]]]:
     if not table_exists("dd03l"):
         return {}
 
@@ -1896,45 +2013,33 @@ def fetch_adso_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
     if not normalized_objects:
         return {}
 
-    activate_data_by_object = fetch_rsoadso_activate_data_by_object(normalized_objects)
-    rsiobj_names = fetch_rsiobj_name_set()
-
-    conn = get_conn()
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute(
-            """
-            SELECT TABNAME, POSITION, FIELDNAME, KEYFLAG
-            FROM dd03l
-            WHERE TABNAME LIKE '/BIC/A%'
-            ORDER BY TABNAME,
-                     CAST(COALESCE(NULLIF(TRIM(POSITION), ''), '0') AS UNSIGNED),
-                     FIELDNAME
-            """
-        )
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-        conn.close()
+    resolved_activate_data = activate_data_by_object or fetch_rsoadso_activate_data_by_object(normalized_objects)
+    resolved_rsiobj_names = rsiobj_names if rsiobj_names is not None else fetch_rsiobj_name_set()
+    suffixes_by_object = {
+        object_name: {"2" if resolved_activate_data.get(object_name, "") == "X" else "1"}
+        for object_name in normalized_objects
+    }
+    candidate_tables = build_dd03l_object_tabname_candidates(normalized_objects, suffixes_by_object)
+    rows = fetch_dd03l_rows_for_tabnames([table for table_names in candidate_tables.values() for table in table_names])
 
     inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
-    object_name_set = set(normalized_objects)
+    table_to_object = {
+        table_name: object_name
+        for object_name, table_names in candidate_tables.items()
+        for table_name in table_names
+    }
     inventory_by_object: Dict[str, List[Dict[str, object]]] = defaultdict(list)
     for row in rows:
-        object_name = derive_adso_name_from_dd03l_tabname(row.get("TABNAME"))
-        if not object_name or object_name not in object_name_set:
-            continue
-
-        activate_data = activate_data_by_object.get(object_name, "")
-        expected_suffix = "2" if activate_data == "X" else "1"
-        if dd03l_tabname_suffix_digit(row.get("TABNAME")) != expected_suffix:
+        table_name = str(row.get("TABNAME") or "").strip().upper()
+        object_name = table_to_object.get(table_name)
+        if not object_name:
             continue
         inventory_by_object[object_name].append(row)
 
     for object_name in normalized_objects:
         object_inventory = build_dd03l_object_inventory(
             inventory_by_object.get(object_name, []),
-            rsiobj_names,
+            resolved_rsiobj_names,
         )
         if not object_inventory:
             continue
@@ -1943,7 +2048,10 @@ def fetch_adso_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
     return inventory
 
 
-def fetch_odso_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, Dict[str, Dict[str, object]]]:
+def fetch_odso_field_inventory_from_dd03l(
+    object_names: List[str],
+    rsiobj_names: Set[str] | None = None,
+) -> Dict[str, Dict[str, Dict[str, object]]]:
     if not table_exists("dd03l"):
         return {}
 
@@ -1959,38 +2067,28 @@ def fetch_odso_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
     if not normalized_objects:
         return {}
 
-    rsiobj_names = fetch_rsiobj_name_set()
-
-    conn = get_conn()
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute(
-            """
-            SELECT TABNAME, POSITION, FIELDNAME, KEYFLAG
-            FROM dd03l
-            WHERE TABNAME LIKE '/BIC/A%'
-            ORDER BY TABNAME,
-                     CAST(COALESCE(NULLIF(TRIM(POSITION), ''), '0') AS UNSIGNED),
-                     FIELDNAME
-            """
-        )
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-        conn.close()
+    resolved_rsiobj_names = rsiobj_names if rsiobj_names is not None else fetch_rsiobj_name_set()
+    candidate_tables = build_dd03l_object_tabname_candidates(normalized_objects)
+    rows = fetch_dd03l_rows_for_tabnames([table for table_names in candidate_tables.values() for table in table_names])
 
     inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
-    object_name_set = set(normalized_objects)
+    table_to_object = {
+        table_name: object_name
+        for object_name, table_names in candidate_tables.items()
+        for table_name in table_names
+    }
     inventory_by_object: Dict[str, List[Dict[str, object]]] = defaultdict(list)
     for row in rows:
-        object_name = derive_adso_name_from_dd03l_tabname(row.get("TABNAME"))
-        if object_name and object_name in object_name_set:
-            inventory_by_object[object_name].append(row)
+        table_name = str(row.get("TABNAME") or "").strip().upper()
+        object_name = table_to_object.get(table_name)
+        if not object_name:
+            continue
+        inventory_by_object[object_name].append(row)
 
     for object_name in normalized_objects:
         object_inventory = build_dd03l_object_inventory(
             inventory_by_object.get(object_name, []),
-            rsiobj_names,
+            resolved_rsiobj_names,
         )
         if not object_inventory:
             continue
@@ -3839,7 +3937,14 @@ def append_or_update_edge(
 
 
 def fetch_bw_object_name_map(node_names: List[str]) -> Dict[str, str]:
-    normalized_names = [normalize_bw_object_lookup(name) for name in node_names if normalize_bw_object_lookup(name)]
+    normalized_names: List[str] = []
+    seen_names: Set[str] = set()
+    for name in node_names:
+        normalized_name = normalize_bw_object_lookup(name)
+        if not normalized_name or normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+        normalized_names.append(normalized_name)
     if not normalized_names:
         return {}
 
@@ -4607,7 +4712,7 @@ def fetch_tran_mapping_rows(tran_id: str) -> List[Dict[str, object]]:
     if not normalized_tran_id:
         return []
 
-    materialized_rows = fetch_materialized_tran_mapping_rows(normalized_tran_id)
+    materialized_rows = fetch_materialized_tran_mapping_rows_batch([normalized_tran_id]).get(normalized_tran_id, [])
     if materialized_rows:
         return apply_unified_mapping_row_field_types(materialized_rows)
 
@@ -4621,6 +4726,170 @@ def fetch_tran_mapping_rows(tran_id: str) -> List[Dict[str, object]]:
         conn.close()
 
     return apply_unified_mapping_row_field_types(normalize_tran_mapping_rows(rows))
+
+
+def fetch_materialized_tran_mapping_rows_batch(tran_ids: List[str]) -> Dict[str, List[Dict[str, object]]]:
+    normalized_tran_ids: List[str] = []
+    seen_tran_ids: Set[str] = set()
+    for tran_id in tran_ids:
+        normalized_tran_id = str(tran_id or "").strip()
+        if not normalized_tran_id or normalized_tran_id in seen_tran_ids:
+            continue
+        seen_tran_ids.add(normalized_tran_id)
+        normalized_tran_ids.append(normalized_tran_id)
+
+    if not normalized_tran_ids:
+        return {}
+
+    if not table_exists(RSTRAN_MAPPING_RULE_FULL_TABLE):
+        return {tran_id: fetch_materialized_tran_mapping_rows(tran_id) for tran_id in normalized_tran_ids}
+
+    placeholders = ", ".join(["%s"] * len(normalized_tran_ids))
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT tran_id, rule_id, step_id, seg_id, pair_index, display_order, ruleposit,
+                   source_system, source_field, source_field_is_key AS source_keyflag,
+                   target_field, target_field_is_key AS target_keyflag,
+                   rule_type, aggr, source_field_origin, target_field_origin, row_kind,
+                   source_object, target_object
+            FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}`
+            WHERE tran_id IN ({placeholders})
+            ORDER BY tran_id, display_order, rule_id, step_id, seg_id, pair_index, source_field, target_field
+            """,
+            tuple(normalized_tran_ids),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    if not rows:
+        return {}
+
+    field_lookup_keys: Set[Tuple[str, int, int, str, str, str]] = set()
+    rsks_lookup_pairs: Set[Tuple[str, str]] = set()
+    for row in rows:
+        tran_id = str(row.get("tran_id") or "").strip()
+        rule_id = int(row.get("rule_id") or 0)
+        step_id = int(row.get("step_id") or 0)
+        seg_id = str(row.get("seg_id") or "").strip()
+        source_field = str(row.get("source_field") or "").strip()
+        target_field = str(row.get("target_field") or "").strip()
+        if source_field:
+            field_lookup_keys.add((tran_id, rule_id, step_id, seg_id, "0", source_field))
+            if str(row.get("source_field_origin") or "").strip() == "rsksfieldnew":
+                rsks_lookup_pairs.add((normalize_bw_object_lookup(row.get("source_object")), normalize_field_name(source_field)))
+        if target_field:
+            field_lookup_keys.add((tran_id, rule_id, step_id, seg_id, "1", target_field))
+            if str(row.get("target_field_origin") or "").strip() == "rsksfieldnew":
+                rsks_lookup_pairs.add((normalize_bw_object_lookup(row.get("target_object")), normalize_field_name(target_field)))
+
+    field_type_lookup: Dict[Tuple[str, int, int, str, str, str], Tuple[str, str]] = {}
+    if field_lookup_keys:
+        conn = get_conn()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"""
+                SELECT TRANID, RULEID, STEPID, SEGID, PARAMTYPE, FIELDNM, FIELDTYPE, KEYFLAG
+                FROM rstranfield
+                WHERE OBJVERS = 'A'
+                  AND TRANID IN ({placeholders})
+                  AND PARAMTYPE IN ('0', '1')
+                """,
+                tuple(normalized_tran_ids),
+            )
+            for row in cur.fetchall():
+                lookup_key = (
+                    str(row.get("TRANID") or "").strip(),
+                    int(row.get("RULEID") or 0),
+                    int(row.get("STEPID") or 0),
+                    str(row.get("SEGID") or "").strip(),
+                    str(row.get("PARAMTYPE") or "").strip(),
+                    str(row.get("FIELDNM") or "").strip(),
+                )
+                if lookup_key in field_lookup_keys:
+                    field_type_lookup[lookup_key] = (
+                        str(row.get("FIELDTYPE") or "").strip(),
+                        str(row.get("KEYFLAG") or "").strip(),
+                    )
+        finally:
+            cur.close()
+            conn.close()
+
+    rsks_field_type_lookup: Dict[Tuple[str, str], str] = {}
+    rsks_sources = sorted({source for source, _ in rsks_lookup_pairs if source})
+    if rsks_sources and table_exists("rsksfieldnew"):
+        placeholders_rsks = ", ".join(["%s"] * len(rsks_sources))
+        conn = get_conn()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"""
+                SELECT ISOURCE, FIELDNM, IOBJNM
+                FROM rsksfieldnew
+                WHERE OBJVERS = 'A'
+                  AND ISOURCE IN ({placeholders_rsks})
+                """,
+                tuple(rsks_sources),
+            )
+            for row in cur.fetchall():
+                source_name = normalize_bw_object_lookup(row.get("ISOURCE"))
+                lookup_field = normalize_field_name(row.get("IOBJNM") or row.get("FIELDNM"))
+                if not source_name or not lookup_field:
+                    continue
+                pair = (source_name, lookup_field)
+                if pair in rsks_lookup_pairs and pair not in rsks_field_type_lookup:
+                    rsks_field_type_lookup[pair] = "I" if normalize_field_name(row.get("IOBJNM")) else "F"
+        finally:
+            cur.close()
+            conn.close()
+
+    rows_by_tran: Dict[str, List[Dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        tran_id = str(row.get("tran_id") or "").strip()
+        rule_id = int(row.get("rule_id") or 0)
+        step_id = int(row.get("step_id") or 0)
+        seg_id = str(row.get("seg_id") or "").strip()
+        source_field = str(row.get("source_field") or "").strip()
+        target_field = str(row.get("target_field") or "").strip()
+
+        source_field_type, source_keyflag = field_type_lookup.get(
+            (tran_id, rule_id, step_id, seg_id, "0", source_field),
+            ("", str(row.get("source_keyflag") or "").strip()),
+        )
+        target_field_type, target_keyflag = field_type_lookup.get(
+            (tran_id, rule_id, step_id, seg_id, "1", target_field),
+            ("", str(row.get("target_keyflag") or "").strip()),
+        )
+
+        if not source_field_type and str(row.get("source_field_origin") or "").strip() == "rsksfieldnew":
+            source_field_type = rsks_field_type_lookup.get(
+                (normalize_bw_object_lookup(row.get("source_object")), normalize_field_name(source_field)),
+                "",
+            )
+        if not target_field_type and str(row.get("target_field_origin") or "").strip() == "rsksfieldnew":
+            target_field_type = rsks_field_type_lookup.get(
+                (normalize_bw_object_lookup(row.get("target_object")), normalize_field_name(target_field)),
+                "",
+            )
+
+        normalized_rows = normalize_tran_mapping_rows([
+            {
+                **row,
+                "source_fieldtype": source_field_type,
+                "source_keyflag": source_keyflag,
+                "target_fieldtype": target_field_type,
+                "target_keyflag": target_keyflag,
+            }
+        ])
+        if normalized_rows:
+            rows_by_tran[tran_id].extend(normalized_rows)
+
+    return rows_by_tran
 
 
 def normalize_routine_kind(value: object) -> str:
@@ -4787,7 +5056,7 @@ def build_path_mapping_payload(
     odso_objects: Set[str] = set()
     trcs_objects: Set[str] = set()
     iobj_objects: Set[str] = set()
-    has_rsds_object = False
+    rsds_pairs: Set[Tuple[str, str]] = set()
     all_tran_ids: Set[str] = set()
 
     for segment in segments:
@@ -4802,10 +5071,8 @@ def build_path_mapping_payload(
         normalized_target_type = normalize_type_code(segment_target_type)
 
         if normalized_source_type in {"RSDS", "DATASOURCE", "SOURCE"}:
-            has_rsds_object = True
             segment_source, source_system = parse_rsds_identity(segment_source, "")
         if normalized_target_type in {"RSDS", "DATASOURCE", "SOURCE"}:
-            has_rsds_object = True
             segment_target, target_system = parse_rsds_identity(segment_target, "")
 
         normalized_source = normalize_bw_object_lookup(segment_source)
@@ -4823,6 +5090,8 @@ def build_path_mapping_payload(
             trcs_objects.add(normalized_source)
         elif normalized_source_type == "IOBJ" and normalized_source:
             iobj_objects.add(normalized_source)
+        elif normalized_source_type in {"RSDS", "DATASOURCE", "SOURCE"} and normalized_source and source_system:
+            rsds_pairs.add((normalized_source, source_system))
 
         if normalized_target_type == "ADSO" and normalized_target:
             adso_objects.add(normalized_target)
@@ -4832,6 +5101,8 @@ def build_path_mapping_payload(
             trcs_objects.add(normalized_target)
         elif normalized_target_type == "IOBJ" and normalized_target:
             iobj_objects.add(normalized_target)
+        elif normalized_target_type in {"RSDS", "DATASOURCE", "SOURCE"} and normalized_target and target_system:
+            rsds_pairs.add((normalized_target, target_system))
 
         prepared_segments.append(
             {
@@ -4848,15 +5119,22 @@ def build_path_mapping_payload(
 
     object_display_name_map = fetch_bw_object_name_map(object_names_for_display)
     activate_data_by_object = fetch_rsoadso_activate_data_by_object(sorted(adso_objects)) if adso_objects else {}
-    rsds_inventory = fetch_rsds_field_inventory() if has_rsds_object else {}
+    rsds_inventory = fetch_rsds_field_inventory_for_pairs(sorted(rsds_pairs)) if rsds_pairs else {}
+    rsiobj_names = fetch_rsiobj_name_set() if (adso_objects or odso_objects) else set()
     dd03l_inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
     if odso_objects:
-        dd03l_inventory.update(fetch_odso_field_inventory_from_dd03l(sorted(odso_objects)))
+        dd03l_inventory.update(fetch_odso_field_inventory_from_dd03l(sorted(odso_objects), rsiobj_names=rsiobj_names))
     if adso_objects:
-        dd03l_inventory.update(fetch_adso_field_inventory_from_dd03l(sorted(adso_objects)))
+        dd03l_inventory.update(
+            fetch_adso_field_inventory_from_dd03l(
+                sorted(adso_objects),
+                activate_data_by_object=activate_data_by_object,
+                rsiobj_names=rsiobj_names,
+            )
+        )
     trcs_inventory = fetch_trcs_field_inventory(sorted(trcs_objects)) if trcs_objects else {}
     iobj_inventory = fetch_iobj_field_inventory_from_dd03l(sorted(iobj_objects)) if iobj_objects else {}
-    rsiobj_names = fetch_rsiobj_name_set() if adso_objects else set()
+    tran_mapping_rows_by_tran = fetch_materialized_tran_mapping_rows_batch(sorted(all_tran_ids)) if all_tran_ids else {}
     logic_details = (
         fetch_tran_logic_details(sorted(all_tran_ids))
         if include_logic and all_tran_ids
@@ -4871,7 +5149,9 @@ def build_path_mapping_payload(
         tran_ids = segment.get("tran_ids") or []
         mapping_rows: List[Dict[str, object]] = []
         for tran_id in tran_ids:
-            mapping_rows.extend(fetch_tran_mapping_rows(tran_id))
+            normalized_tran_id = str(tran_id or "").strip()
+            if normalized_tran_id:
+                mapping_rows.extend(tran_mapping_rows_by_tran.get(normalized_tran_id, []))
 
         segment_source = str(segment.get("source") or "").strip()
         segment_target = str(segment.get("target") or "").strip()
