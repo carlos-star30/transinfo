@@ -495,6 +495,7 @@
   let dataQueryGridApi = null;
   let dataQueryPreviewTimer = 0;
   let dataQueryRequestSeq = 0;
+  let dataQueryHydrationSeq = 0;
   let dataQueryInFlight = false;
   let latestDataQueryResult = null;
   let latestDataQueryResultMode = "preview";
@@ -507,6 +508,7 @@
     joinType: "left",
     joinConditions: [],
     selectedFields: [],
+    selectedFieldsConfigured: false,
     outputFields: [],
     outputFieldsConfigured: false,
     resultFieldsCollapsed: false,
@@ -1011,10 +1013,21 @@
     dataQuerySelectedFieldDraft = dedup;
   }
 
+  function getAllDataQueryFieldRefs() {
+    return buildDataQueryFieldOptions().map((item) => String(item?.value || "").trim()).filter(Boolean);
+  }
+
   function syncDataQuerySelectedFieldDraft(forceFromCommitted = false) {
     sanitizeDataQuerySelectedFields();
-    if (forceFromCommitted || !Array.isArray(dataQuerySelectedFieldDraft) || !dataQuerySelectedFieldDraft.length) {
-      dataQuerySelectedFieldDraft = [...(Array.isArray(dataQueryState.selectedFields) ? dataQueryState.selectedFields : [])];
+    const committedSelectedFields = Array.isArray(dataQueryState.selectedFields) ? dataQueryState.selectedFields : [];
+    if (!dataQueryState.selectedFieldsConfigured) {
+      const defaultFieldRefs = getAllDataQueryFieldRefs();
+      dataQueryState.selectedFields = [...defaultFieldRefs];
+      dataQuerySelectedFieldDraft = [...defaultFieldRefs];
+      return;
+    }
+    if (forceFromCommitted || !Array.isArray(dataQuerySelectedFieldDraft)) {
+      dataQuerySelectedFieldDraft = [...committedSelectedFields];
     }
     sanitizeDataQuerySelectedFieldDraft();
   }
@@ -1430,30 +1443,19 @@
     return `<button type="button" class="${className}" ${attrText}${titleAttr}>${esc(normalizedLabel)}</button>`;
   }
 
-  function getStepLogicTriggerLabel(segment) {
-    const stepLogicGroups = Array.isArray(segment?.step_logic) ? segment.step_logic : [];
-    const entries = stepLogicGroups.flatMap((group) => Array.isArray(group?.entries) ? group.entries : []);
-    const kinds = new Set(entries.map((entry) => normalizeLogicKind(entry?.kind)).filter(Boolean));
-
-    if (kinds.has("EXPERT")) return "Expert Routine";
-    if (kinds.has("START") && kinds.has("END")) return "Start and End Routine";
-    if (kinds.has("START")) return "Start Routine";
-    if (kinds.has("END")) return "End Routine";
-    if (kinds.has("GLOBAL")) return "Global Routine";
-    return "No routine";
-  }
-
   function renderStepLogicTrigger(segment) {
     const entryCount = Number(segment?.step_logic_entry_count || 0);
     const hasTranIds = Array.isArray(segment?.tran_ids) && segment.tran_ids.some((item) => String(item || "").trim());
     const canTryLazyLoad = !activePathMappingFeatures.logic && hasTranIds;
-    const label = getStepLogicTriggerLabel(segment);
-    const attrs = (entryCount > 0 || canTryLazyLoad)
+    const hasRoutine = entryCount > 0 || canTryLazyLoad;
+    const attrs = hasRoutine
       ? { "data-step-logic-open": String(segment?.index || "") }
       : { disabled: "disabled", "aria-disabled": "true" };
-    const extraClass = (entryCount > 0 || canTryLazyLoad) ? "mapping-logic-action-btn-step" : "mapping-logic-action-btn-step is-disabled";
-    const title = (entryCount > 0 || canTryLazyLoad) ? "查看转换级程序" : "当前 Step 没有例程";
-    return renderLogicActionButton(label, attrs, extraClass, title);
+    const extraClass = hasRoutine
+      ? "mapping-logic-action-btn-step is-routine-available"
+      : "mapping-logic-action-btn-step is-routine-unavailable is-disabled";
+    const title = hasRoutine ? "查看转换级程序" : "当前 Step 没有例程";
+    return renderLogicActionButton("Routine", attrs, extraClass, title);
   }
 
   function findSegmentByDisplayIndex(segmentDisplayIndex) {
@@ -2509,6 +2511,7 @@
           selectedFields: (Array.isArray(dataQueryState.selectedFields) ? dataQueryState.selectedFields : [])
             .map((fieldRef) => normalizeDataQueryFieldRef(fieldRef))
             .filter(Boolean),
+          selectedFieldsConfigured: Boolean(dataQueryState.selectedFieldsConfigured),
           outputFields: (Array.isArray(dataQueryState.outputFields) ? dataQueryState.outputFields : [])
             .map((fieldKey) => normalizeDataQueryResultColumnKey(fieldKey))
             .filter(Boolean),
@@ -2551,6 +2554,7 @@
         selectedFields: (Array.isArray(parsed.selectedFields) ? parsed.selectedFields : [])
           .map((fieldRef) => normalizeDataQueryFieldRef(fieldRef))
           .filter(Boolean),
+        selectedFieldsConfigured: Boolean(parsed.selectedFieldsConfigured),
         outputFields: (Array.isArray(parsed.outputFields) ? parsed.outputFields : [])
           .map((fieldKey) => normalizeDataQueryResultColumnKey(fieldKey))
           .filter(Boolean),
@@ -2582,6 +2586,7 @@
         joinType: "left",
         joinConditions: [],
         selectedFields: [],
+        selectedFieldsConfigured: false,
         outputFields: [],
         outputFieldsConfigured: false,
         resultFieldsCollapsed: false,
@@ -2837,6 +2842,11 @@
     if (!dataQueryState.mainTable) {
       dataQuerySelectFieldsList.innerHTML = '<div class="database-query-select-fields-empty">请先选择主表后再选择查询字段。</div>';
       return;
+    }
+
+    if (!dataQueryState.selectedFieldsConfigured) {
+      const defaultFieldRefs = getAllDataQueryFieldRefs();
+      dataQuerySelectedFieldDraft = [...defaultFieldRefs];
     }
 
     const filteredOptions = options.filter((option) => {
@@ -3150,7 +3160,23 @@
   }
 
   async function hydrateDataQueryWorkspace() {
-    await refreshDataQueryMetadata();
+    const hydrationSeq = ++dataQueryHydrationSeq;
+    try {
+      await withAppLoading("正在加载数据库表配置...", async () => {
+        await refreshDataQueryMetadata();
+      });
+    } catch (error) {
+      if (hydrationSeq !== dataQueryHydrationSeq) {
+        return;
+      }
+      const rawMsg = String(error?.message || "").trim();
+      clearDataQueryResult(`查询配置加载失败：${rawMsg || "请稍后重试。"}`);
+      showToast(`数据库查询配置加载失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
+      return;
+    }
+    if (hydrationSeq !== dataQueryHydrationSeq) {
+      return;
+    }
     if (dataQueryLimitInput) {
       dataQueryLimitInput.value = String(normalizeDataQueryLimit(dataQueryState.limit));
     }
@@ -3261,6 +3287,9 @@
     if (dataQueryMainTableSelect) {
       dataQueryMainTableSelect.addEventListener("change", async () => {
         dataQueryState.mainTable = normalizeDataQueryTableName(dataQueryMainTableSelect.value);
+        dataQueryState.selectedFields = [];
+        dataQueryState.selectedFieldsConfigured = false;
+        dataQuerySelectedFieldDraft = [];
         if (!dataQueryState.mainTable) {
           dataQueryState.joinTable = "";
           dataQueryState.joinConditions = [];
@@ -3273,6 +3302,9 @@
       dataQueryJoinTableSelect.addEventListener("change", async () => {
         dataQueryState.joinTable = normalizeDataQueryTableName(dataQueryJoinTableSelect.value);
         dataQueryState.joinConditions = dataQueryState.joinTable ? [createEmptyDataQueryJoinCondition()] : [];
+        dataQueryState.selectedFields = [];
+        dataQueryState.selectedFieldsConfigured = false;
+        dataQuerySelectedFieldDraft = [];
         await refreshDataQueryMetadata();
         scheduleDataQueryPreview();
       });
@@ -3384,6 +3416,7 @@
       dataQueryApplySelectFieldsBtn.addEventListener("click", () => {
         sanitizeDataQuerySelectedFieldDraft();
         dataQueryState.selectedFields = [...dataQuerySelectedFieldDraft];
+        dataQueryState.selectedFieldsConfigured = true;
         dataQueryState.selectFieldsCollapsed = true;
         syncDataQuerySelectFieldsPanelCollapsed();
         saveDataQueryState();
@@ -3426,11 +3459,6 @@
         dataQueryState.filters = [];
         renderDataQueryFilters();
         saveDataQueryState();
-      });
-    }
-    if (dataQueryPreviewBtn) {
-      dataQueryPreviewBtn.addEventListener("click", () => {
-        void executeDataQuery("preview");
       });
     }
     if (dataQueryRunBtn) {

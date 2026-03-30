@@ -5,6 +5,7 @@
 ## 当前固定配置
 
 - 前端代理地址: http://localhost:8088
+- 前端代理监听地址环境变量: `DATAFLOW_DEV_HOST`，默认 `127.0.0.1`
 - 后端 API 地址: http://127.0.0.1:8000
 - 前端代理脚本: `frontend-prototype/dev_proxy_server.py`
 - 后端启动脚本: `scripts/run_import_status_api.sh`
@@ -18,6 +19,26 @@
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
+```
+
+## 一键启动（Mac + Parallels）
+
+在项目根目录执行:
+
+```bash
+./scripts/start_local_mac_parallels.sh
+```
+
+脚本会自动:
+
+- 启动后端 `8000`，如果已在运行则跳过
+- 启动前端代理 `8088`，监听 `0.0.0.0` 以便 Parallels Win11 访问
+- 等待服务就绪后打印 Mac 和 Win11 可访问地址
+
+当前这台机器在 Parallels Shared Network 下的 Win11 访问地址是:
+
+```text
+http://10.211.55.2:8088/
 ```
 
 ## 启动顺序（每次都这样）
@@ -39,11 +60,26 @@ HOST=0.0.0.0 PORT=8000 ./scripts/run_import_status_api.sh
 ```bash
 cd "/Volumes/Data/VS Code/Transformation fields mapping"
 source .venv/bin/activate
-DATAFLOW_DEV_PORT=8088 DATAFLOW_BACKEND_BASE=http://127.0.0.1:8000 \
+DATAFLOW_DEV_HOST=127.0.0.1 DATAFLOW_DEV_PORT=8088 DATAFLOW_BACKEND_BASE=http://127.0.0.1:8000 \
   python frontend-prototype/dev_proxy_server.py
 ```
 
 看到 Serving local frontend proxy at http://localhost:8088 即表示前端代理已启动。
+
+如果需要从 Parallels Windows 11 访问，把监听地址改为 `0.0.0.0`:
+
+```bash
+cd "/Volumes/Data/VS Code/Transformation fields mapping"
+source .venv/bin/activate
+DATAFLOW_DEV_HOST=0.0.0.0 DATAFLOW_DEV_PORT=8088 DATAFLOW_BACKEND_BASE=http://127.0.0.1:8000 \
+  python frontend-prototype/dev_proxy_server.py
+```
+
+在当前这台 Mac 的 Parallels Shared Network 下，Windows 11 可访问:
+
+```text
+http://10.211.55.2:8088/
+```
 
 ### 浏览器访问
 
@@ -51,6 +87,12 @@ DATAFLOW_DEV_PORT=8088 DATAFLOW_BACKEND_BASE=http://127.0.0.1:8000 \
 
 ```text
 http://localhost:8088/
+```
+
+如果是 Parallels Windows 11，请打开:
+
+```text
+http://10.211.55.2:8088/
 ```
 
 ## 快速自检

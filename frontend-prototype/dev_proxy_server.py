@@ -14,6 +14,7 @@ from pathlib import Path
 FRONTEND_DIR = Path(__file__).resolve().parent
 WORKSPACE_DIR = FRONTEND_DIR.parent
 BACKEND_BASE = os.environ.get("DATAFLOW_BACKEND_BASE", "http://127.0.0.1:8000").rstrip("/")
+HOST = os.environ.get("DATAFLOW_DEV_HOST", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.environ.get("DATAFLOW_DEV_PORT", "8088"))
 STATIC_CACHEABLE_SUFFIXES = {
     ".css",
@@ -49,8 +50,9 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             html = index_path.read_text(encoding="utf-8")
 
             runtime_override = (
-                '<script>window.__DATAFLOW_API_BASE__ = "http://localhost:'
-                f'{PORT}"; window.__DATAFLOW_APP_TITLE__ = "转换映射查询"; window.__DATAFLOW_APP_VERSION__ = "1.0.0";</script>'
+                '<script>window.__DATAFLOW_API_BASE__ = window.location.origin; '
+                'window.__DATAFLOW_APP_TITLE__ = "转换映射查询"; '
+                'window.__DATAFLOW_APP_VERSION__ = "1.0.0";</script>'
             )
             html = html.replace(
                 '<script src="./runtime-config.js?v=20260319-v1.6.20"></script>',
@@ -79,7 +81,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/runtime-config.js" or self.path.startswith("/runtime-config.js?"):
             body = (
-                f'window.__DATAFLOW_API_BASE__ = "http://localhost:{PORT}";\n'
+                'window.__DATAFLOW_API_BASE__ = window.location.origin;\n'
                 'window.__DATAFLOW_APP_TITLE__ = "转换映射查询";\n'
                 'window.__DATAFLOW_APP_VERSION__ = "1.0.0";\n'
             ).encode("utf-8")
@@ -242,7 +244,7 @@ class ThreadingTCPServer(socketserver.ThreadingTCPServer):
 
 
 if __name__ == "__main__":
-    with ThreadingTCPServer(("127.0.0.1", PORT), ProxyHandler) as httpd:
-        print(f"Serving local frontend proxy at http://localhost:{PORT}")
+    with ThreadingTCPServer((HOST, PORT), ProxyHandler) as httpd:
+        print(f"Serving local frontend proxy at http://{HOST}:{PORT}")
         print(f"Proxying /api to {BACKEND_BASE}")
         httpd.serve_forever()

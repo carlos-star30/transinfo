@@ -2143,7 +2143,24 @@ body.data-query-panel-maximized::after {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.01em;
+}
+
+.mapping-logic-action-btn-step.is-routine-available {
   background: linear-gradient(180deg, rgba(255, 186, 94, 0.2), rgba(95, 53, 21, 0.24));
+  border-color: rgba(255, 206, 132, 0.44);
+  color: #ffe1ae;
+}
+
+.mapping-logic-action-btn-step.is-routine-available:hover,
+.mapping-logic-action-btn-step.is-routine-available:focus-visible {
+  border-color: rgba(255, 225, 155, 0.58);
+  background: linear-gradient(180deg, rgba(255, 214, 137, 0.24), rgba(137, 96, 38, 0.24));
+}
+
+.mapping-logic-action-btn-step.is-routine-unavailable {
+  border-color: rgba(168, 180, 201, 0.24);
+  background: linear-gradient(180deg, rgba(118, 130, 151, 0.16), rgba(66, 75, 92, 0.2));
+  color: rgba(214, 222, 236, 0.68);
 }
 
 .mapping-logic-action-btn.is-disabled,
@@ -4298,7 +4315,7 @@ body.has-app-loading {
 .password-toggle-field input[type="text"] {
   flex: 1;
   width: 100%;
-  padding-right: 42px;
+  padding-right: 52px;
 }
 
 .login-password-toggle,
@@ -4311,24 +4328,27 @@ body.has-app-loading {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  z-index: 2;
   border: none;
   border-radius: 999px;
   background: transparent;
-  color: rgba(226, 236, 252, 0.78);
+  color: rgba(65, 151, 255, 0.98);
+  box-shadow: none;
+  backdrop-filter: none;
   cursor: pointer;
   transform: translateY(-50%);
-  transition: background 140ms ease, color 140ms ease;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .login-password-toggle:hover,
 .password-toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(239, 246, 255, 0.96);
+  background: rgba(52, 118, 221, 0.14);
+  color: rgba(112, 184, 255, 1);
 }
 
 .login-password-toggle:focus-visible,
 .password-toggle-btn:focus-visible {
-  outline: 2px solid rgba(120, 190, 255, 0.72);
+  outline: 2px solid rgba(151, 211, 255, 0.82);
   outline-offset: 2px;
 }
 
@@ -4376,6 +4396,18 @@ body.has-app-loading {
 .login-shell.has-error .login-form-row input {
   border-color: rgba(255, 138, 138, 0.85);
   box-shadow: 0 0 0 2px rgba(255, 138, 138, 0.2);
+}
+
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
+
+input[type="password"]::-webkit-credentials-auto-fill-button,
+input[type="password"]::-webkit-strong-password-auto-fill-button {
+  display: none !important;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .login-actions {
@@ -5083,6 +5115,56 @@ body[data-dropdown-mode="push"] .dropdown {
   margin: 3px 0;
   font-size: 14px;
   line-height: 1.4;
+}
+
+.glass-input:is(select),
+.import-tools select,
+.import-tool-select,
+.create-user-tools select,
+.import-map-table select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  color-scheme: dark;
+  padding-right: 38px;
+  background-color: rgba(255, 255, 255, 0.12);
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.06)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.25 6 6.25 11 1.25' fill='none' stroke='%23f2f7ff' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, no-repeat;
+  background-position: 0 0, calc(100% - 14px) 50%;
+  background-size: auto, 12px 8px;
+}
+
+.glass-input:is(select)::-ms-expand,
+.import-tools select::-ms-expand,
+.import-tool-select::-ms-expand,
+.create-user-tools select::-ms-expand,
+.import-map-table select::-ms-expand {
+  display: none;
+}
+
+.glass-input:is(select) option,
+.glass-input:is(select) optgroup,
+.import-tools select option,
+.import-tools select optgroup,
+.import-tool-select option,
+.import-tool-select optgroup,
+.create-user-tools select option,
+.create-user-tools select optgroup,
+.import-map-table select option,
+.import-map-table select optgroup {
+  background: #16263c;
+  color: #f5f8ff;
+}
+
+.glass-input:is(select):disabled,
+.import-tools select:disabled,
+.import-tool-select:disabled,
+.create-user-tools select:disabled,
+.import-map-table select:disabled {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: rgba(200, 212, 236, 0.72);
 }
 
 .guide.mode-guide {
