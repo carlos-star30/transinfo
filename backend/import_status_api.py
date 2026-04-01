@@ -5089,20 +5089,34 @@ def fetch_bw_object_name_map(node_names: List[str]) -> Dict[str, str]:
     cur = conn.cursor()
     object_name_map: Dict[str, str] = {}
     try:
-        cur.execute(
-            """
-            SELECT BW_OBJECT_NORM, MAX(NAME_EN) AS NAME_EN
-            FROM bw_object_name
-            WHERE BW_OBJECT_NORM IN (SELECT value FROM json_each(?))
-            GROUP BY BW_OBJECT_NORM
-            """,
-            (json.dumps(normalized_names),)
-        )
+        if IS_SQLITE:
+            cur.execute(
+                """
+                SELECT BW_OBJECT_NORM, MAX(NAME_EN) AS NAME_EN
+                FROM bw_object_name
+                WHERE BW_OBJECT_NORM IN (SELECT value FROM json_each(?))
+                GROUP BY BW_OBJECT_NORM
+                """,
+                (json.dumps(normalized_names),)
+            )
+        else:
+            placeholders = ", ".join(["%s"] * len(normalized_names))
+            cur.execute(
+                f"""
+                SELECT UPPER(TRIM(BW_OBJECT_NORM)) AS BW_OBJECT_NORM, MAX(NAME_EN) AS NAME_EN
+                FROM bw_object_name
+                WHERE UPPER(TRIM(BW_OBJECT_NORM)) IN ({placeholders})
+                GROUP BY UPPER(TRIM(BW_OBJECT_NORM))
+                """,
+                tuple(normalized_names),
+            )
         for bw_object, object_name in cur.fetchall():
             key = normalize_bw_object_lookup(bw_object)
             value = str(object_name or "").strip()
             if key and value:
                 object_name_map[key] = value
+    except (sqlite3.Error, mysql.connector.Error):
+        return {}
     finally:
         cur.close()
         conn.close()
