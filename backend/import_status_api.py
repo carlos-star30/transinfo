@@ -5322,12 +5322,13 @@ def resolve_rstran_start_name(start_name: str, start_source: str = "", start_typ
     cur = conn.cursor()
     try:
         if normalized_source and "SOURCESYS" in rstran_columns:
+            source_placeholder = "?" if IS_SQLITE else "%s"
             cur.execute(
                 f"""
                 SELECT 1
                 FROM rstran
-                WHERE UPPER(TRIM({source_col})) = UPPER(?)
-                  AND UPPER(TRIM(COALESCE(SOURCESYS, ''))) = UPPER(?)
+                WHERE UPPER(TRIM({source_col})) = UPPER({source_placeholder})
+                  AND UPPER(TRIM(COALESCE(SOURCESYS, ''))) = UPPER({source_placeholder})
                 LIMIT 1
                 """,
                 (normalized_start_name, normalized_source),
@@ -5335,12 +5336,13 @@ def resolve_rstran_start_name(start_name: str, start_source: str = "", start_typ
             if cur.fetchone():
                 return normalized_start_name
 
+        name_placeholder = "?" if IS_SQLITE else "%s"
         cur.execute(
             f"""
             SELECT 1
             FROM rstran
-            WHERE UPPER(TRIM({source_col})) = UPPER(?)
-               OR UPPER(TRIM(TARGETNAME)) = UPPER(?)
+            WHERE UPPER(TRIM({source_col})) = UPPER({name_placeholder})
+               OR UPPER(TRIM(TARGETNAME)) = UPPER({name_placeholder})
             LIMIT 1
             """,
             (normalized_start_name, normalized_start_name),
