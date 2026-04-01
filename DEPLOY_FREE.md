@@ -2,13 +2,21 @@
 
 This guide gives you a long-term free setup with URL access.
 
-Current stable release: v1.0
+Current stable release: v2.0.0
 
-This v1.0 baseline includes the current searchable home page, flow tracing page, user login and admin management, datasource source-system tracing, and the latest lock/unlock safety rules.
+This v2.0.0 release includes the stabilized path-selection flow, uppercase technical-name alignment, field metadata display, RSTRANT transformation text support, aligned export improvements, and the local-vs-online safety fixes that were completed in this cycle.
 
 Deployment targets:
-- Frontend: Cloudflare Pages (free URL)
-- Backend + MySQL: Oracle Cloud Always Free VM + Docker Compose
+- Frontend: Netlify
+- Backend: Render Web Service (Docker)
+- Database: TiDB Cloud or another managed MySQL-compatible database
+
+This repository already contains the current deployment descriptors:
+
+- `netlify.toml`
+- `render.yaml`
+
+If you want the shortest path, use `DEPLOY_MINIMAL_CHECKLIST.md` together with `DEPLOY_PLAN_B.md`.
 
 ## 1) Prepare Project Locally
 
@@ -35,49 +43,76 @@ Example:
 window.__DATAFLOW_API_BASE__ = "http://129.146.xx.xx:8000";
 ```
 
-## 2) Deploy Backend (Oracle Free VM)
+For this repository's current deployment path, use your Render backend URL instead, for example:
 
-1. Create Ubuntu VM in Oracle Cloud Always Free.
-2. Open inbound rules:
-- TCP 22 (SSH)
-- TCP 8000 (API)
-3. SSH into VM and install Docker + Compose plugin.
-
-4. Upload project to VM (git clone or scp).
-5. In project root on VM:
-
-```bash
-cp .env.example .env
-# edit .env with your DB_PASSWORD
-
-docker compose up -d --build
+```js
+window.__DATAFLOW_API_BASE__ = "https://transinfo.onrender.com";
 ```
 
-6. Check health:
+## 2) Deploy Backend (Render)
+
+1. Push this repository to GitHub.
+2. In Render, create a new Web Service from the repository.
+3. Use `render.yaml` or manually point Docker build to `backend/Dockerfile`.
+4. Set environment variables:
 
 ```bash
-docker compose ps
-curl http://127.0.0.1:8000/api/import-status
+DB_HOST=<tidb_host>
+DB_PORT=4000
+DB_USER=<tidb_user>
+DB_PASSWORD=<tidb_password>
+DB_NAME=trans_fields_mapping
+
+DB_SSL_CA=/etc/ssl/certs/ca-certificates.crt
+DB_SSL_DISABLED=false
+DB_SSL_VERIFY_CERT=true
+DB_SSL_VERIFY_IDENTITY=true
+
+DEFAULT_ADMIN_USERNAME=admin
+DEFAULT_ADMIN_PASSWORD=<strong_password>
+
+AUTH_COOKIE_NAME=trans_fields_mapping_session
+AUTH_COOKIE_SECURE=true
+AUTH_COOKIE_SAMESITE=none
+AUTH_COOKIE_DOMAIN=
+
+CORS_ALLOW_ORIGINS=https://<your-netlify-domain>
 ```
 
-If API returns JSON, backend is ready.
+5. Deploy and verify:
 
-## 3) Deploy Frontend (Cloudflare Pages)
+```bash
+https://<your-render-domain>/docs
+```
+
+## 3) Deploy Frontend (Netlify)
 
 1. Push this project to GitHub.
-2. In Cloudflare Pages:
+2. In Netlify:
 - Create project from GitHub repo
 - Set build command: (leave empty)
 - Set output directory: `frontend-prototype`
 3. Deploy.
 
-Cloudflare gives a free URL like:
-- `https://your-project.pages.dev`
+Netlify gives a free URL like:
+- `https://your-project.netlify.app`
 
 ## 4) Verify End-to-End
 
-1. Open your Pages URL.
-2. Try search and flow trace.
+1. Open your Netlify URL.
+2. Log in with the configured admin account.
+3. Verify search, path mapping, export, and import cards.
+4. Verify backend docs at `https://<your-render-domain>/docs`.
+
+## 5) Version marker
+
+This deployment batch is the v2.0.0 release.
+
+Frontend version display is sourced from:
+
+- `frontend-prototype/runtime-config.js`
+- `frontend-prototype/app.js`
+- `frontend-prototype/dev_proxy_server.py`
 3. Try import status API from browser devtools/network.
 
 ## 5) Daily Operations

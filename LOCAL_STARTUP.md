@@ -2,6 +2,15 @@
 
 本文档固定使用项目当前生效的本地配置，目标是每次都按同一套参数启动，避免端口和代理不一致导致登录失败。
 
+## 对话口令约定
+
+以后建议固定使用下面两句话，不再说模糊的“启动项目”：
+
+- `启动本地项目`：表示本地前端 + 本地后端 + 本地数据库。
+- `检查线上项目`：表示只检查已部署环境，不启动本地服务，不切本地数据库。
+
+如果你明确说 `本地前端连线上后端`，才会进入混合模式；否则默认不这么做。
+
 ## 当前固定配置
 
 - 前端代理地址: http://localhost:8088
@@ -10,6 +19,11 @@
 - 前端代理脚本: `frontend-prototype/dev_proxy_server.py`
 - 后端启动脚本: `scripts/run_import_status_api.sh`
 - 后端入口模块: `backend.import_status_api:app`
+
+补充文档:
+
+- Windows + SQLite 本地启动: `SQLITE_LOCAL_STARTUP.md`
+- 路径逻辑与表关系: `docs/path-selection-logic-and-table-relations.md`
 
 ## 一次性准备
 
@@ -144,6 +158,28 @@ lsof -nP -iTCP:8088 -sTCP:LISTEN
 - database: trans_fields_mapping
 
 请确保本地 MySQL 使用这一组参数，或在启动后端前通过环境变量覆盖。
+
+### 切换 SQLite 启动（无需 MySQL）
+
+后端支持通过环境变量切到 SQLite:
+
+```bash
+DB_DRIVER=sqlite SQLITE_DB_PATH="./backend/data/trans_fields_mapping.db" HOST=0.0.0.0 PORT=8000 ./scripts/run_import_status_api.sh
+```
+
+若需要把现有 MySQL 数据搬到 SQLite，先执行:
+
+```bash
+python scripts/migrate_mysql_to_sqlite.py --source-host localhost --source-port 3306 --source-user root --source-password showlang --source-database trans_fields_mapping --target-file backend/data/trans_fields_mapping.db --drop-existing
+```
+
+Windows PowerShell 示例:
+
+```powershell
+$env:DB_DRIVER="sqlite"
+$env:SQLITE_DB_PATH="backend/data/trans_fields_mapping.db"
+C:/Users/JINYOZH/AppData/Local/Python/pythoncore-3.14-64/python.exe -m uvicorn backend.import_status_api:app --host 0.0.0.0 --port 8000 --reload
+```
 
 ## 停止服务
 

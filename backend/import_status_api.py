@@ -3,14 +3,16 @@ import json
 import os
 import re
 import base64
+import sqlite3
+import time
 from collections import defaultdict, deque
 from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import mysql.connector
 import pandas as pd
@@ -18,7 +20,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from openpyxl import load_workbook
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
@@ -30,6 +32,9 @@ DB_CONFIG = {
     "read_timeout": int(os.getenv("DB_READ_TIMEOUT", "3600")),
     "write_timeout": int(os.getenv("DB_WRITE_TIMEOUT", "3600")),
 }
+DB_DRIVER = str(os.getenv("DB_DRIVER", "mysql")).strip().lower() or "mysql"
+SQLITE_DB_PATH = str(os.getenv("SQLITE_DB_PATH", "backend/data/trans_fields_mapping.db")).strip() or "backend/data/trans_fields_mapping.db"
+IS_SQLITE = DB_DRIVER == "sqlite"
 
 DB_SSL_CA = str(os.getenv("DB_SSL_CA", "")).strip()
 DB_SSL_DISABLED = str(os.getenv("DB_SSL_DISABLED", "false")).strip().lower() == "true"
@@ -68,8 +73,8 @@ DEFAULT_ADMIN_PASSWORD = str(os.getenv("DEFAULT_ADMIN_PASSWORD", "")).strip()
 if AUTH_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     AUTH_COOKIE_SAMESITE = "lax"
 
-ALLOWED_TABLES = {"rstran", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name"}
-IMPORT_SCHEMA_TABLES = {"rstran", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name"}
+ALLOWED_TABLES = {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name"}
+IMPORT_SCHEMA_TABLES = {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name"}
 RSTRAN_MAPPING_RULE_TABLE = "rstran_mapping_rule"
 RSTRAN_MAPPING_RULE_FULL_TABLE = "rstran_mapping_rule_full"
 DD03L_METADATA_PATH = Path(os.getenv("DD03L_METADATA_PATH", "/app/Excel Data/P4C-DD03L-Table Fields-RS_DD-0317.xlsx"))
@@ -97,10 +102,15 @@ DDIC_METADATA_TABLES = {
     "rsksnewt": {"metadata_tabname": "RSKSNEWT", "comment": "InfoSource text metadata"},
     "rsksfieldnew": {"metadata_tabname": "RSKSFIELDNEW", "comment": "InfoSource field metadata"},
     "rsksfieldnewt": {"metadata_tabname": "RSKSFIELDNEWT", "comment": "InfoSource field text metadata"},
+    "rstrant": {"metadata_tabname": "RSTRANT", "comment": "Transformation text metadata"},
     "rstranstepcnst": {"metadata_tabname": "RSTRANSTEPCNST", "comment": "Transformation constant rule metadata"},
     "rstransteprout": {"metadata_tabname": "RSTRANSTEPROUT", "comment": "Transformation formula and routine rule metadata"},
 }
 _DDIC_METADATA_CACHE: Tuple[pd.DataFrame, Dict[str, int]] | None = None
+_TABLE_COLUMN_NAMES_CACHE: Dict[str, Set[str]] = {}
+_TABLE_EXISTS_CACHE: Dict[str, bool] = {}
+_RSIOBJ_TYPE_LOOKUP_CACHE: Dict[str, str] | None = None
+_ADSO_FIELD_TEXT_LOOKUP_CACHE: Dict[Tuple[str, str], Dict[Tuple[str, str], str]] = {}
 RSDIOBJ_IOBJTP_TO_FIELD_TYPE = {
     "CHA": "I",
     "KYF": "K",
@@ -151,19 +161,25 @@ class AdminResetPasswordRequest(BaseModel):
 
 
 class PathSelectionRequest(BaseModel):
-    source_name: str = ""
-    source_system: str = ""
-    target_name: str = ""
-    tran_id: str = ""
-    waypoints: List[str] = []
+    model_config = ConfigDict(populate_by_name=True)
+
+    SOURCE: str = Field(default="", alias="source_name")
+    SOURCESYS: str = Field(default="", alias="source_system")
+    TARGETNAME: str = Field(default="", alias="target_name")
+    TRANID: str = Field(default="", alias="tran_id")
+    WAYPOINTS: List[str] = Field(default_factory=list, alias="waypoints")
 
 
 class PathSegmentRequest(BaseModel):
-    source: str = ""
-    target: str = ""
-    source_type: str = ""
-    target_type: str = ""
-    tran_ids: List[str] = []
+    model_config = ConfigDict(populate_by_name=True)
+
+    SOURCE: str = Field(default="", alias="source")
+    TARGETNAME: str = Field(default="", alias="target")
+    SOURCETYPE: str = Field(default="", alias="source_type")
+    TARGETTYPE: str = Field(default="", alias="target_type")
+    SOURCESYS: str = Field(default="", alias="source_system")
+    TARGETSYSTEM: str = Field(default="", alias="target_system")
+    TRANIDS: List[str] = Field(default_factory=list, alias="tran_ids")
 
 
 class PathMappingRequest(BaseModel):
@@ -272,11 +288,181 @@ def hash_session_token(raw_token: str) -> str:
     return hashlib.sha256(str(raw_token or "").encode("utf-8")).hexdigest()
 
 
+def parse_datetime_like(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+
+    # Fast reject non datetime-like text before trying strptime.
+    if len(text) < 19:
+        return value
+    if text[4:5] != "-" or text[7:8] != "-":
+        return value
+    sep = text[10:11]
+    if sep not in {" ", "T"}:
+        return value
+    if text[13:14] != ":" or text[16:17] != ":":
+        return value
+
+    if len(text) == 19:
+        fmt = f"%Y-%m-%d{sep}%H:%M:%S"
+    elif len(text) > 20 and text[19:20] == "." and text[20:].isdigit():
+        fmt = f"%Y-%m-%d{sep}%H:%M:%S.%f"
+    else:
+        return value
+
+    try:
+        return datetime.strptime(text, fmt)
+    except ValueError:
+        return value
+    return value
+
+
+def sqlite_value(value: object) -> object:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, bool):
+        return 1 if value else 0
+    return value
+
+
+def sqlite_normalize_sql(sql: str) -> str:
+    normalized = str(sql or "")
+    normalized = normalized.replace("%s", "?")
+    normalized = re.sub(r"\bNOW\(\)", "CURRENT_TIMESTAMP", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"DATE_FORMAT\(([^,]+),\s*'%Y-%m-%d %H:%i'\)", r"strftime('%Y-%m-%d %H:%M', \1)", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bINSERT\s+IGNORE\s+INTO\b", "INSERT OR IGNORE INTO", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bTRUNCATE\s+TABLE\s+(`?[A-Za-z0-9_]+`?)", r"DELETE FROM \1", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bCAST\((.*?)\s+AS\s+UNSIGNED\)", r"CAST(\1 AS INTEGER)", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\bCAST\((.*?)\s+AS\s+CHAR\)", r"CAST(\1 AS TEXT)", normalized, flags=re.IGNORECASE)
+    normalized = normalized.replace("<=>", "IS")
+    return normalized
+
+
+class SQLiteCompatCursor:
+    def __init__(self, cursor: sqlite3.Cursor, dictionary: bool = False):
+        self._cursor = cursor
+        self._dictionary = bool(dictionary)
+
+    def execute(self, sql: str, params: object = None):
+        normalized = sqlite_normalize_sql(sql)
+        if params is None:
+            self._cursor.execute(normalized)
+        elif isinstance(params, (list, tuple)):
+            self._cursor.execute(normalized, tuple(sqlite_value(item) for item in params))
+        else:
+            self._cursor.execute(normalized, params)
+        return self
+
+    def executemany(self, sql: str, seq_of_params: object):
+        normalized = sqlite_normalize_sql(sql)
+        parsed_rows = []
+        for row in seq_of_params or []:
+            if isinstance(row, (list, tuple)):
+                parsed_rows.append(tuple(sqlite_value(item) for item in row))
+            else:
+                parsed_rows.append(row)
+        self._cursor.executemany(normalized, parsed_rows)
+        return self
+
+    def _convert_row(self, row: sqlite3.Row | tuple | None):
+        if row is None:
+            return None
+        if self._dictionary:
+            keys = [item[0] for item in (self._cursor.description or [])]
+            return {key: parse_datetime_like(row[key]) for key in keys}
+        if isinstance(row, sqlite3.Row):
+            return tuple(parse_datetime_like(value) for value in row)
+        return tuple(parse_datetime_like(value) for value in row)
+
+    def fetchone(self):
+        return self._convert_row(self._cursor.fetchone())
+
+    def fetchall(self):
+        return [self._convert_row(row) for row in self._cursor.fetchall()]
+
+    def fetchmany(self, size: int | None = None):
+        rows = self._cursor.fetchmany(size) if size is not None else self._cursor.fetchmany()
+        return [self._convert_row(row) for row in rows]
+
+    def close(self):
+        self._cursor.close()
+
+    def __getattr__(self, name: str):
+        return getattr(self._cursor, name)
+
+
+class SQLiteCompatConnection:
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def cursor(self, dictionary: bool = False):
+        return SQLiteCompatCursor(self._connection.cursor(), dictionary=dictionary)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+
+def sqlite_resolve_table_name(conn: SQLiteCompatConnection | sqlite3.Connection, table_name: str) -> str:
+    raw_conn = conn._connection if isinstance(conn, SQLiteCompatConnection) else conn
+    cur = raw_conn.cursor()
+    try:
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND LOWER(name) = LOWER(?) LIMIT 1",
+            (str(table_name or "").strip(),),
+        )
+        row = cur.fetchone()
+        return str(row[0]) if row and row[0] else str(table_name or "").strip()
+    finally:
+        cur.close()
+
+
 def get_conn():
+    if IS_SQLITE:
+        sqlite_path = Path(SQLITE_DB_PATH)
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(str(sqlite_path), check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        return SQLiteCompatConnection(connection)
     return mysql.connector.connect(**DB_CONFIG)
 
 
 def ensure_status_table() -> None:
+    if IS_SQLITE:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS `import_status` (
+                  `table_name` TEXT NOT NULL,
+                  `last_import_at` TEXT NOT NULL,
+                  `last_import_count` INTEGER NOT NULL DEFAULT 0,
+                  `updated_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`table_name`)
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+        return
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -310,6 +496,8 @@ def ensure_status_table() -> None:
 
 
 def migrate_legacy_infoobject_tables() -> None:
+    if IS_SQLITE:
+        return
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -857,6 +1045,97 @@ def ensure_ddic_metadata_table_schema(table_name: str) -> None:
         conn.close()
 
 
+def sqlite_type_for_ddic_metadata(datatype: object, length: object, decimals: object) -> str:
+    normalized_type = str(datatype or "").strip().upper()
+    normalized_length = str(length or "").strip()
+    normalized_decimals = str(decimals or "").strip()
+    if normalized_type in {"INT1", "INT2", "INT4", "INT8"}:
+        return "INTEGER"
+    if normalized_type in {"DEC", "CURR", "QUAN", "FLTP"}:
+        return "REAL"
+    if normalized_type in {"DATS", "TIMS", "CHAR", "NUMC", "LANG", "CLNT", "UNIT", "CUKY", "ACCP", "STRG", "RAW", "LCHR", "SSTR"}:
+        return "TEXT"
+    if normalized_length and normalized_decimals:
+        return "TEXT"
+    return "TEXT"
+
+
+def ensure_sqlite_ddic_metadata_table_schema(table_name: str) -> None:
+    normalized_table_name = str(table_name or "").strip().lower()
+    config = DDIC_METADATA_TABLES.get(normalized_table_name)
+    if not config or not IS_SQLITE:
+        return
+    if table_exists(normalized_table_name):
+        return
+    if not table_exists("dd03l"):
+        return
+
+    metadata_tabname = str(config.get("metadata_tabname") or "").strip().upper()
+    if not metadata_tabname:
+        return
+
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT FIELDNAME, POSITION, KEYFLAG, "NOTNULL" AS NOTNULL_FLAG, DATATYPE, LENG, DECIMALS
+            FROM dd03l
+            WHERE UPPER(TRIM(TABNAME)) = UPPER(%s)
+            ORDER BY POSITION, FIELDNAME
+            """,
+            (metadata_tabname,),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return
+
+        column_defs: List[str] = []
+        primary_keys: List[str] = []
+        seen_fields: Set[str] = set()
+        for row in rows:
+            field_name = str(row.get("FIELDNAME") or "").strip()
+            if not field_name or field_name in seen_fields or field_name.startswith("."):
+                continue
+            seen_fields.add(field_name)
+            data_type_sql = sqlite_type_for_ddic_metadata(row.get("DATATYPE"), row.get("LENG"), row.get("DECIMALS"))
+            not_null = str(row.get("NOTNULL_FLAG") or "").strip().upper() == "X" or str(row.get("KEYFLAG") or "").strip().upper() == "X"
+            null_sql = "NOT NULL" if not_null else "NULL"
+            column_defs.append(f'"{field_name}" {data_type_sql} {null_sql}')
+            if str(row.get("KEYFLAG") or "").strip().upper() == "X":
+                primary_keys.append(f'"{field_name}"')
+
+        if not column_defs:
+            return
+
+        body = list(column_defs)
+        if primary_keys:
+            body.append(f"PRIMARY KEY ({', '.join(primary_keys)})")
+        raw_conn = conn._connection if isinstance(conn, SQLiteCompatConnection) else conn
+        raw_cur = raw_conn.cursor()
+        try:
+            raw_cur.execute(f'CREATE TABLE IF NOT EXISTS "{normalized_table_name}" (\n  ' + ',\n  '.join(body) + '\n)')
+            raw_conn.commit()
+        finally:
+            raw_cur.close()
+
+        _TABLE_EXISTS_CACHE.pop(normalized_table_name, None)
+        _TABLE_COLUMN_NAMES_CACHE.pop(normalized_table_name, None)
+    finally:
+        cur.close()
+        conn.close()
+
+
+def ensure_import_target_table_schema(table_name: str) -> None:
+    normalized_table_name = str(table_name or "").strip().lower()
+    if not normalized_table_name:
+        return
+    if table_exists(normalized_table_name):
+        return
+    if IS_SQLITE and normalized_table_name in DDIC_METADATA_TABLES:
+        ensure_sqlite_ddic_metadata_table_schema(normalized_table_name)
+
+
 def ensure_dd03l_schema() -> None:
     ensure_ddic_metadata_table_schema("dd03l")
 
@@ -915,6 +1194,10 @@ def ensure_rstranstepcnst_schema() -> None:
 
 def ensure_rstransteprout_schema() -> None:
     ensure_ddic_metadata_table_schema("rstransteprout")
+
+
+def ensure_rstrant_schema() -> None:
+    ensure_ddic_metadata_table_schema("rstrant")
 
 
 def ensure_rstran_mapping_rule_full_table() -> None:
@@ -1015,7 +1298,219 @@ def get_field_text_language_codes(language: str = "EN") -> Tuple[str, ...]:
     return (normalized, normalized[:1])
 
 
-def fetch_rsds_field_text_lookup(datasource: str, logsys: str, language: str = "EN") -> Dict[Tuple[str, str], str]:
+def get_object_text_language_codes(language: str = "EN") -> Tuple[str, ...]:
+    ordered_codes: List[str] = []
+    for candidate in (*get_field_text_language_codes(language), "DE", "D"):
+        normalized = str(candidate or "").strip().upper()
+        if normalized and normalized not in ordered_codes:
+            ordered_codes.append(normalized)
+    return tuple(ordered_codes)
+
+
+def choose_preferred_object_text(candidates: List[Tuple[str, str]], language: str = "EN") -> str:
+    if not candidates:
+        return ""
+
+    lang_priority = {code: index for index, code in enumerate(get_object_text_language_codes(language))}
+    best_text = ""
+    best_key: Tuple[int, int] | None = None
+    for lang_code, text_value in candidates:
+        normalized_text = str(text_value or "").strip()
+        if not normalized_text:
+            continue
+        normalized_lang = str(lang_code or "").strip().upper()
+        candidate_key = (lang_priority.get(normalized_lang, len(lang_priority) + 1), -len(normalized_text))
+        if best_key is None or candidate_key < best_key:
+            best_key = candidate_key
+            best_text = normalized_text
+    return best_text
+
+
+def fetch_rsds_object_text_lookup(datasource_pairs: List[Tuple[str, str]], language: str = "EN") -> Dict[Tuple[str, str], str]:
+    normalized_pairs: List[Tuple[str, str]] = []
+    seen_pairs: Set[Tuple[str, str]] = set()
+    for datasource, logsys in datasource_pairs or []:
+        normalized_pair = (normalize_bw_object_lookup(datasource), normalize_bw_object_lookup(logsys))
+        if not normalized_pair[0] or not normalized_pair[1] or normalized_pair in seen_pairs:
+            continue
+        seen_pairs.add(normalized_pair)
+        normalized_pairs.append(normalized_pair)
+
+    if not normalized_pairs or not table_exists("rsdst"):
+        return {}
+
+    available_columns = get_table_column_names("rsdst")
+    text_columns = [column_name for column_name in ("TXTLG", "TXTMD", "TXTSH") if column_name in available_columns]
+    if not text_columns:
+        return {}
+
+    pair_filters = []
+    params: List[object] = []
+    for datasource, logsys in normalized_pairs:
+        pair_filters.append("(UPPER(TRIM(DATASOURCE)) = UPPER(%s) AND UPPER(TRIM(LOGSYS)) = UPPER(%s))")
+        params.extend([datasource, logsys])
+
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT DATASOURCE, LOGSYS, LANGU, {', '.join(text_columns)}
+            FROM rsdst
+            WHERE OBJVERS = 'A'
+              AND ({' OR '.join(pair_filters)})
+            """,
+            tuple(params),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    candidates_by_pair: Dict[Tuple[str, str], List[Tuple[str, str]]] = defaultdict(list)
+    for row in rows:
+        lookup_pair = (
+            normalize_bw_object_lookup(row.get("DATASOURCE")),
+            normalize_bw_object_lookup(row.get("LOGSYS")),
+        )
+        text_value = next((str(row.get(column_name) or "").strip() for column_name in text_columns if str(row.get(column_name) or "").strip()), "")
+        if lookup_pair[0] and lookup_pair[1] and text_value:
+            candidates_by_pair[lookup_pair].append((str(row.get("LANGU") or "").strip(), text_value))
+
+    return {
+        pair: choose_preferred_object_text(candidates, language)
+        for pair, candidates in candidates_by_pair.items()
+        if choose_preferred_object_text(candidates, language)
+    }
+
+
+def fetch_adso_object_text_lookup(object_names: List[str], language: str = "EN") -> Dict[str, str]:
+    normalized_objects = sorted({normalize_bw_object_lookup(object_name) for object_name in (object_names or []) if normalize_bw_object_lookup(object_name)})
+    if not normalized_objects or not table_exists("rsoadsot"):
+        return {}
+
+    available_columns = get_table_column_names("rsoadsot")
+    text_columns = [column_name for column_name in ("DESCRIPTION", "QUICK_INFO") if column_name in available_columns]
+    if not text_columns:
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(normalized_objects))
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT LANGU, ADSONM, OBJVERS, TTYP, COLNAME, {', '.join(text_columns)}
+            FROM rsoadsot
+            WHERE OBJVERS = 'A'
+              AND UPPER(TRIM(ADSONM)) IN ({placeholders})
+              AND COALESCE(TRIM(COLNAME), '') = ''
+            """,
+            tuple(normalized_objects),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    lang_priority = {code: index for index, code in enumerate(get_object_text_language_codes(language))}
+    ttyp_priority = {"EUSR": 0, "": 1}
+    best_by_object: Dict[str, Tuple[Tuple[int, int, int], str]] = {}
+    for row in rows:
+        object_name = normalize_bw_object_lookup(row.get("ADSONM"))
+        if not object_name:
+            continue
+        text_value = next((str(row.get(column_name) or "").strip() for column_name in text_columns if str(row.get(column_name) or "").strip()), "")
+        if not text_value:
+            continue
+        lang_code = str(row.get("LANGU") or "").strip().upper()
+        ttyp = str(row.get("TTYP") or "").strip().upper()
+        candidate_key = (
+            ttyp_priority.get(ttyp, len(ttyp_priority) + 1),
+            lang_priority.get(lang_code, len(lang_priority) + 1),
+            -len(text_value),
+        )
+        existing = best_by_object.get(object_name)
+        if existing is None or candidate_key < existing[0]:
+            best_by_object[object_name] = (candidate_key, text_value)
+
+    return {object_name: text_value for object_name, (_key, text_value) in best_by_object.items()}
+
+
+def fetch_trcs_object_text_lookup(object_names: List[str], language: str = "EN") -> Dict[str, str]:
+    normalized_objects = sorted({normalize_bw_object_lookup(object_name) for object_name in (object_names or []) if normalize_bw_object_lookup(object_name)})
+    if not normalized_objects or not table_exists("rsksnewt"):
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(normalized_objects))
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT LANGU, ISOURCE, TXTLG
+            FROM rsksnewt
+            WHERE OBJVERS = 'A'
+              AND UPPER(TRIM(ISOURCE)) IN ({placeholders})
+            """,
+            tuple(normalized_objects),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    candidates_by_object: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+    for row in rows:
+        object_name = normalize_bw_object_lookup(row.get("ISOURCE"))
+        text_value = str(row.get("TXTLG") or "").strip()
+        if object_name and text_value:
+            candidates_by_object[object_name].append((str(row.get("LANGU") or "").strip(), text_value))
+
+    return {
+        object_name: choose_preferred_object_text(candidates, language)
+        for object_name, candidates in candidates_by_object.items()
+        if choose_preferred_object_text(candidates, language)
+    }
+
+
+def fetch_iobj_object_text_lookup(object_names: List[str], language: str = "EN") -> Dict[str, str]:
+    return fetch_rsiobj_text_lookup(object_names, language=language)
+
+
+def resolve_path_object_display_name(
+    object_name: str,
+    object_system: str,
+    object_type: str,
+    *,
+    rsds_name_lookup: Dict[Tuple[str, str], str],
+    adso_name_lookup: Dict[str, str],
+    trcs_name_lookup: Dict[str, str],
+    iobj_name_lookup: Dict[str, str],
+) -> str:
+    normalized_object = normalize_bw_object_lookup(object_name)
+    normalized_system = normalize_bw_object_lookup(object_system)
+    normalized_type = normalize_type_code(object_type)
+    if not normalized_object:
+        return ""
+    if normalized_type in {"RSDS", "DATASOURCE", "SOURCE"}:
+        return str(rsds_name_lookup.get((normalized_object, normalized_system)) or "").strip()
+    if normalized_type == "ADSO":
+        return str(adso_name_lookup.get(normalized_object) or "").strip()
+    if normalized_type == "TRCS":
+        return str(trcs_name_lookup.get(normalized_object) or "").strip()
+    if normalized_type == "IOBJ":
+        return str(iobj_name_lookup.get(normalized_object) or "").strip()
+    return ""
+
+
+def fetch_rsds_field_text_lookup(
+    datasource: str,
+    logsys: str,
+    language: str = "EN",
+    field_names: Optional[Set[str]] = None,
+    seg_ids: Optional[Set[str]] = None,
+) -> Dict[Tuple[str, str], str]:
     normalized_ds = normalize_bw_object_lookup(datasource)
     normalized_logsys = normalize_bw_object_lookup(logsys)
     if not normalized_ds or not normalized_logsys or not table_exists("rsdssegfdt"):
@@ -1023,21 +1518,52 @@ def fetch_rsds_field_text_lookup(datasource: str, logsys: str, language: str = "
 
     lang_codes = get_field_text_language_codes(language)
     placeholders = ", ".join(["%s"] * len(lang_codes))
+    normalized_field_names = sorted({normalize_field_name(name) for name in (field_names or set()) if normalize_field_name(name)})
+    normalized_seg_ids = sorted({str(seg_id or "").strip() for seg_id in (seg_ids or set()) if str(seg_id or "").strip()})
+    field_filter_sql = ""
+    seg_filter_sql = ""
+    params: List[object] = [normalized_ds, normalized_logsys, *lang_codes]
+    if normalized_field_names:
+        field_placeholders = ", ".join(["%s"] * len(normalized_field_names))
+        field_filter_sql = f"\n              AND UPPER(TRIM(FIELDNM)) IN ({field_placeholders})"
+        params.extend(normalized_field_names)
+    if normalized_seg_ids:
+        seg_placeholders = ", ".join(["%s"] * len(normalized_seg_ids))
+        seg_filter_sql = f"\n              AND COALESCE(TRIM(SEGID), '') IN ({seg_placeholders})"
+        params.extend(normalized_seg_ids)
+
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
-        cur.execute(
-            f"""
-            SELECT SEGID, FIELDNM, TXTLG
-            FROM rsdssegfdt
-            WHERE UPPER(TRIM(DATASOURCE)) = UPPER(%s)
-              AND UPPER(TRIM(LOGSYS)) = UPPER(%s)
-              AND UPPER(TRIM(LANGU)) IN ({placeholders})
-            ORDER BY CAST(COALESCE(NULLIF(TRIM(SEGID), ''), '0') AS UNSIGNED),
-                     CAST(COALESCE(NULLIF(TRIM(POSIT), ''), '0') AS UNSIGNED)
-            """,
-            (normalized_ds, normalized_logsys, *lang_codes),
-        )
+        if IS_SQLITE:
+            cur.execute(
+                f"""
+                SELECT SEGID, FIELDNM, TXTLG
+                FROM rsdssegfdt
+                WHERE DATASOURCE = %s
+                  AND LOGSYS = %s
+                  AND LANGU IN ({placeholders})
+                  {field_filter_sql}
+                  {seg_filter_sql}
+                ORDER BY SEGID, POSIT
+                """,
+                tuple(params),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT SEGID, FIELDNM, TXTLG
+                FROM rsdssegfdt
+                WHERE UPPER(TRIM(DATASOURCE)) = UPPER(%s)
+                  AND UPPER(TRIM(LOGSYS)) = UPPER(%s)
+                  AND UPPER(TRIM(LANGU)) IN ({placeholders})
+                  {field_filter_sql}
+                  {seg_filter_sql}
+                ORDER BY CAST(COALESCE(NULLIF(TRIM(SEGID), ''), '0') AS UNSIGNED),
+                         CAST(COALESCE(NULLIF(TRIM(POSIT), ''), '0') AS UNSIGNED)
+                """,
+                tuple(params),
+            )
         rows = cur.fetchall()
     except mysql.connector.Error:
         return {}
@@ -1068,6 +1594,12 @@ def fetch_adso_field_text_lookup(object_name: str, language: str = "EN") -> Dict
 
     activate_data = fetch_rsoadso_activate_data_by_object([normalized_object]).get(normalized_object, "")
     expected_suffix = "2" if activate_data == "X" else "1"
+    cache_key = (normalized_object, str(language or "EN").strip().upper())
+    cached = _ADSO_FIELD_TEXT_LOOKUP_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    tabname = f"/BIC/A{normalized_object}{expected_suffix}"
     lang_codes = get_field_text_language_codes(language)
     placeholders = ", ".join(["%s"] * len(lang_codes))
     conn = get_conn()
@@ -1077,11 +1609,12 @@ def fetch_adso_field_text_lookup(object_name: str, language: str = "EN") -> Dict
             f"""
             SELECT TABNAME, FIELDNAME, DDTEXT
             FROM dd03t
-            WHERE TABNAME LIKE '/BIC/A%'
+            WHERE UPPER(TRIM(TABNAME)) = UPPER(%s)
               AND UPPER(TRIM(DDLANGUAGE)) IN ({placeholders})
+              AND UPPER(TRIM(COALESCE(AS4LOCAL, ''))) = 'A'
             ORDER BY TABNAME, FIELDNAME
             """,
-            tuple(lang_codes),
+            (tabname, *lang_codes),
         )
         rows = cur.fetchall()
     except mysql.connector.Error:
@@ -1089,6 +1622,19 @@ def fetch_adso_field_text_lookup(object_name: str, language: str = "EN") -> Dict
     finally:
         cur.close()
         conn.close()
+
+    rsiobj_names = fetch_rsiobj_name_set()
+    lookup: Dict[Tuple[str, str], str] = {}
+    for row in rows:
+        field_name, _field_type = normalize_adso_field_name_with_rsiobj(row.get("FIELDNAME"), rsiobj_names)
+        text_value = str(row.get("DDTEXT") or "").strip()
+        if not field_name or not text_value:
+            continue
+        key = ("", field_name)
+        if key not in lookup:
+            lookup[key] = text_value
+    _ADSO_FIELD_TEXT_LOOKUP_CACHE[cache_key] = dict(lookup)
+    return lookup
 
 
 def fetch_dd03t_table_field_text_lookup(table_names: List[str], language: str = "EN") -> Dict[Tuple[str, str], str]:
@@ -1257,53 +1803,65 @@ def fetch_rs_table_field_text_lookup_by_rollname(table_name: str, language: str 
             field_text_lookup[field_name] = text_value
     return field_text_lookup
 
-    rsiobj_names = fetch_rsiobj_name_set()
-    lookup: Dict[Tuple[str, str], str] = {}
-    for row in rows:
-        tabname = str(row.get("TABNAME") or "").strip().upper()
-        if not tabname:
-            continue
-        derived_object = derive_adso_name_from_dd03l_tabname(tabname)
-        if derived_object != normalized_object:
-            continue
-        if dd03l_tabname_suffix_digit(tabname) != expected_suffix:
-            continue
-        field_name, _field_type = normalize_adso_field_name_with_rsiobj(row.get("FIELDNAME"), rsiobj_names)
-        text_value = str(row.get("DDTEXT") or "").strip()
-        if not field_name or not text_value:
-            continue
-        key = ("", field_name)
-        if key not in lookup:
-            lookup[key] = text_value
-    return lookup
 
-
-def fetch_trcs_field_text_lookup(isource: str, language: str = "EN") -> Dict[Tuple[str, str], str]:
+def fetch_trcs_field_text_lookup(
+    isource: str,
+    language: str = "EN",
+    field_names: Optional[Set[str]] = None,
+    seg_ids: Optional[Set[str]] = None,
+) -> Dict[Tuple[str, str], str]:
     normalized_isource = normalize_bw_object_lookup(isource)
     if not normalized_isource or not table_exists("rsksfieldnew") or not table_exists("rsksfieldnewt"):
         return {}
 
     lang_codes = get_field_text_language_codes(language)
     placeholders = ", ".join(["%s"] * len(lang_codes))
+    normalized_seg_ids = sorted({str(seg_id or "").strip() for seg_id in (seg_ids or set()) if str(seg_id or "").strip()})
+    seg_filter_sql = ""
+    params: List[object] = [*lang_codes, normalized_isource]
+    if normalized_seg_ids:
+        seg_placeholders = ", ".join(["%s"] * len(normalized_seg_ids))
+        seg_filter_sql = f"\n              AND COALESCE(TRIM(a.SEGID), '') IN ({seg_placeholders})"
+        params.extend(normalized_seg_ids)
+
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
-        cur.execute(
-            f"""
-                        SELECT a.SEGID, a.POSIT, a.TYPE, a.IOBJNM, a.FIELDNM, b.TXTLG
-            FROM rsksfieldnew AS a
-            LEFT JOIN rsksfieldnewt AS b
-              ON UPPER(TRIM(b.ISOURCE)) = UPPER(TRIM(a.ISOURCE))
-             AND COALESCE(TRIM(b.SEGID), '') = COALESCE(TRIM(a.SEGID), '')
-             AND COALESCE(TRIM(b.POSIT), '') = COALESCE(TRIM(a.POSIT), '')
-             AND UPPER(TRIM(b.LANGU)) IN ({placeholders})
-            WHERE a.OBJVERS = 'A'
-              AND UPPER(TRIM(a.ISOURCE)) = UPPER(%s)
-            ORDER BY CAST(COALESCE(NULLIF(TRIM(a.SEGID), ''), '0') AS UNSIGNED),
-                     CAST(COALESCE(NULLIF(TRIM(a.POSIT), ''), '0') AS UNSIGNED)
-            """,
-            (*lang_codes, normalized_isource),
-        )
+        if IS_SQLITE:
+            cur.execute(
+                f"""
+                SELECT a.SEGID, a.POSIT, a.TYPE, a.IOBJNM, a.FIELDNM, b.TXTLG
+                FROM rsksfieldnew AS a
+                LEFT JOIN rsksfieldnewt AS b
+                  ON b.ISOURCE = a.ISOURCE
+                 AND COALESCE(b.SEGID, '') = COALESCE(a.SEGID, '')
+                 AND COALESCE(b.POSIT, '') = COALESCE(a.POSIT, '')
+                 AND b.LANGU IN ({placeholders})
+                WHERE a.OBJVERS = 'A'
+                  AND a.ISOURCE = %s
+                  {seg_filter_sql}
+                ORDER BY a.SEGID, a.POSIT
+                """,
+                tuple(params),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT a.SEGID, a.POSIT, a.TYPE, a.IOBJNM, a.FIELDNM, b.TXTLG
+                FROM rsksfieldnew AS a
+                LEFT JOIN rsksfieldnewt AS b
+                  ON UPPER(TRIM(b.ISOURCE)) = UPPER(TRIM(a.ISOURCE))
+                 AND COALESCE(TRIM(b.SEGID), '') = COALESCE(TRIM(a.SEGID), '')
+                 AND COALESCE(TRIM(b.POSIT), '') = COALESCE(TRIM(a.POSIT), '')
+                 AND UPPER(TRIM(b.LANGU)) IN ({placeholders})
+                WHERE a.OBJVERS = 'A'
+                  AND UPPER(TRIM(a.ISOURCE)) = UPPER(%s)
+                  {seg_filter_sql}
+                ORDER BY CAST(COALESCE(NULLIF(TRIM(a.SEGID), ''), '0') AS UNSIGNED),
+                         CAST(COALESCE(NULLIF(TRIM(a.POSIT), ''), '0') AS UNSIGNED)
+                """,
+                tuple(params),
+            )
         rows = cur.fetchall()
     except mysql.connector.Error:
         return {}
@@ -1340,7 +1898,7 @@ def fetch_rsiobj_text_lookup(iobj_names: List[str], language: str = "EN") -> Dic
     if not normalized_names or not table_exists("rsdiobjt"):
         return {}
 
-    available_columns = {str(item.get("name") or "").strip().upper() for item in get_table_schema("rsdiobjt")}
+    available_columns = get_table_column_names("rsdiobjt")
     text_priority = [column_name for column_name in ("TXTLG", "TXTMD", "TXTSH") if column_name in available_columns]
     if not text_priority:
         return {}
@@ -1380,15 +1938,74 @@ def fetch_rsiobj_text_lookup(iobj_names: List[str], language: str = "EN") -> Dic
     return lookup
 
 
-def build_field_text_lookup_for_object(object_name: str, object_system: str, object_type: str) -> Dict[Tuple[str, str], str]:
+def fetch_rstrant_text_lookup(tran_ids: List[str], language: str = "EN") -> Dict[str, str]:
+    normalized_tran_ids = sorted({str(tran_id or "").strip() for tran_id in (tran_ids or []) if str(tran_id or "").strip()})
+    if not normalized_tran_ids or not table_exists("rstrant"):
+        return {}
+
+    available_columns = get_table_column_names("rstrant")
+    if "TRANID" not in available_columns or "LANGU" not in available_columns:
+        return {}
+
+    text_priority = [column_name for column_name in ("TXTLG", "TXTMD", "TXTSH") if column_name in available_columns]
+    if not text_priority:
+        return {}
+
+    tran_placeholders = ", ".join(["%s"] * len(normalized_tran_ids))
+    lang_codes = get_object_text_language_codes(language)
+    lang_placeholders = ", ".join(["%s"] * len(lang_codes))
+    text_expr = ", ".join([f"NULLIF(TRIM({column_name}), '')" for column_name in text_priority])
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT TRANID,
+                   LANGU,
+                   COALESCE({text_expr}) AS TEXT_VALUE
+            FROM rstrant
+            WHERE UPPER(TRIM(TRANID)) IN ({tran_placeholders})
+              AND UPPER(TRIM(LANGU)) IN ({lang_placeholders})
+            ORDER BY TRANID
+            """,
+            (*normalized_tran_ids, *lang_codes),
+        )
+        rows = cur.fetchall()
+    except mysql.connector.Error:
+        return {}
+    finally:
+        cur.close()
+        conn.close()
+
+    grouped_candidates: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+    for row in rows:
+        tran_id = str(row.get("TRANID") or "").strip()
+        text_value = str(row.get("TEXT_VALUE") or "").strip()
+        if not tran_id or not text_value:
+            continue
+        grouped_candidates[tran_id].append((str(row.get("LANGU") or "").strip(), text_value))
+
+    return {
+        tran_id: choose_preferred_object_text(candidates, language)
+        for tran_id, candidates in grouped_candidates.items()
+    }
+
+
+def build_field_text_lookup_for_object(
+    object_name: str,
+    object_system: str,
+    object_type: str,
+    field_names: Optional[Set[str]] = None,
+    seg_ids: Optional[Set[str]] = None,
+) -> Dict[Tuple[str, str], str]:
     normalized_type = normalize_type_code(object_type)
     if normalized_type in {"RSDS", "DATASOURCE", "SOURCE"}:
         datasource, logsys = parse_rsds_identity(object_name, object_system)
-        return fetch_rsds_field_text_lookup(datasource, logsys)
+        return fetch_rsds_field_text_lookup(datasource, logsys, field_names=field_names, seg_ids=seg_ids)
     if normalized_type in {"ADSO", "ODSO"}:
         return fetch_adso_field_text_lookup(object_name)
     if normalized_type == "TRCS":
-        return fetch_trcs_field_text_lookup(object_name)
+        return fetch_trcs_field_text_lookup(object_name, field_names=field_names, seg_ids=seg_ids)
     return {}
 
 
@@ -1486,21 +2103,57 @@ def enrich_mapping_rows_with_field_text(
     target_object: str,
     target_system: str,
     target_type: str,
+    source_lookup: Optional[Dict[Tuple[str, str], str]] = None,
+    target_lookup: Optional[Dict[Tuple[str, str], str]] = None,
+    rsiobj_type_lookup: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, object]]:
     rows = enrich_supplemented_mapping_rows_with_field_metadata(rows, source_type, target_type)
     rows = apply_unified_mapping_row_field_types(rows, source_type, target_type)
-    source_lookup = build_field_text_lookup_for_object(source_object, source_system, source_type) or {}
-    target_lookup = build_field_text_lookup_for_object(target_object, target_system, target_type) or {}
+
+    source_field_names = {
+        normalize_field_name(row.get("source_field"))
+        for row in rows
+        if normalize_field_name(row.get("source_field"))
+    }
+    target_field_names = {
+        normalize_field_name(row.get("target_field"))
+        for row in rows
+        if normalize_field_name(row.get("target_field"))
+    }
+    seg_ids = {
+        str(row.get("seg_id") or "").strip()
+        for row in rows
+        if str(row.get("seg_id") or "").strip()
+    }
+
+    resolved_source_lookup = source_lookup if source_lookup is not None else (
+        build_field_text_lookup_for_object(
+            source_object,
+            source_system,
+            source_type,
+            field_names=source_field_names,
+            seg_ids=seg_ids,
+        ) or {}
+    )
+    resolved_target_lookup = target_lookup if target_lookup is not None else (
+        build_field_text_lookup_for_object(
+            target_object,
+            target_system,
+            target_type,
+            field_names=target_field_names,
+            seg_ids=seg_ids,
+        ) or {}
+    )
     needed_iobj_names: Set[str] = set()
-    rsiobj_type_lookup = fetch_rsiobj_type_lookup()
-    rsiobj_names = set(rsiobj_type_lookup.keys())
+    resolved_rsiobj_type_lookup = rsiobj_type_lookup if rsiobj_type_lookup is not None else fetch_rsiobj_type_lookup()
+    rsiobj_names = set(resolved_rsiobj_type_lookup.keys())
     for row in rows:
         if is_rsiobj_backed_field_type(row.get("source_fieldtype")):
             _source_field, source_iobj_name, _source_field_type = infer_field_metadata_with_rsiobj(
                 row.get("source_field"),
                 source_type,
                 rsiobj_names,
-                rsiobj_type_lookup,
+                resolved_rsiobj_type_lookup,
             )
             if source_iobj_name:
                 needed_iobj_names.add(source_iobj_name)
@@ -1509,25 +2162,25 @@ def enrich_mapping_rows_with_field_text(
                 row.get("target_field"),
                 target_type,
                 rsiobj_names,
-                rsiobj_type_lookup,
+                resolved_rsiobj_type_lookup,
             )
             if target_iobj_name:
                 needed_iobj_names.add(target_iobj_name)
 
     iobj_text_lookup = fetch_rsiobj_text_lookup(sorted(needed_iobj_names)) if needed_iobj_names else {}
-    if not source_lookup and not target_lookup and not iobj_text_lookup:
+    if not resolved_source_lookup and not resolved_target_lookup and not iobj_text_lookup:
         return rows
 
     for row in rows:
         seg_id = row.get("seg_id")
-        row["source_text"] = resolve_field_text_from_lookup(source_lookup, seg_id, row.get("source_field"))
-        row["target_text"] = resolve_field_text_from_lookup(target_lookup, seg_id, row.get("target_field"))
+        row["source_text"] = resolve_field_text_from_lookup(resolved_source_lookup, seg_id, row.get("source_field"))
+        row["target_text"] = resolve_field_text_from_lookup(resolved_target_lookup, seg_id, row.get("target_field"))
         if not str(row.get("source_text") or "").strip() and is_rsiobj_backed_field_type(row.get("source_fieldtype")):
             _source_field, source_iobj_name, _source_field_type = infer_field_metadata_with_rsiobj(
                 row.get("source_field"),
                 source_type,
                 rsiobj_names,
-                rsiobj_type_lookup,
+                resolved_rsiobj_type_lookup,
             )
             row["source_text"] = str(iobj_text_lookup.get(source_iobj_name) or "").strip()
         if not str(row.get("target_text") or "").strip() and is_rsiobj_backed_field_type(row.get("target_fieldtype")):
@@ -1535,7 +2188,7 @@ def enrich_mapping_rows_with_field_text(
                 row.get("target_field"),
                 target_type,
                 rsiobj_names,
-                rsiobj_type_lookup,
+                resolved_rsiobj_type_lookup,
             )
             row["target_text"] = str(iobj_text_lookup.get(target_iobj_name) or "").strip()
 
@@ -1566,12 +2219,20 @@ def fetch_all_materialized_tran_mapping_rows() -> List[Dict[str, object]]:
 
 
 def fetch_active_tran_metadata() -> Dict[str, Dict[str, str]]:
+    if not table_exists("rstran"):
+        return {}
+
+    rstran_columns = set(get_table_columns("rstran"))
+    source_col = "SOURCE" if "SOURCE" in rstran_columns else ("DATASOURCE" if "DATASOURCE" in rstran_columns else "")
+    if not source_col:
+        return {}
+
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
-            """
-            SELECT TRANID, SOURCETYPE, SOURCENAME, SOURCE, SOURCESYS, TARGETTYPE, TARGETNAME
+            f"""
+            SELECT TRANID, SOURCETYPE, {source_col} AS SOURCE, SOURCESYS, TARGETTYPE, TARGETNAME
             FROM rstran
             WHERE OBJVERS = 'A'
             """
@@ -1590,10 +2251,10 @@ def fetch_active_tran_metadata() -> Dict[str, Dict[str, str]]:
         source_type = normalize_type_code(row.get("SOURCETYPE"))
         target_type = normalize_type_code(row.get("TARGETTYPE"))
 
-        source_name = str(row.get("SOURCENAME") or "").strip()
+        source_name = str(row.get("SOURCE") or "").strip()
         source_system = ""
         if source_type == "RSDS":
-            source_name, source_system = parse_rsds_identity(row.get("SOURCE") or source_name, row.get("SOURCESYS"))
+            source_name, source_system = parse_rsds_identity(source_name, row.get("SOURCESYS"))
 
         target_name = str(row.get("TARGETNAME") or "").strip()
         target_system = ""
@@ -1648,7 +2309,7 @@ def fetch_rsds_field_inventory_for_pairs(
                 params.extend([datasource, logsys])
             cur.execute(
                 f"""
-                SELECT DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM, KEYFIELD
+                                SELECT DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM, KEYFIELD, DATATYPE, LENG, DECIMALS
                 FROM rsdssegfd
                 WHERE OBJVERS = 'A'
                   AND TRANSFER = 'X'
@@ -1663,7 +2324,7 @@ def fetch_rsds_field_inventory_for_pairs(
         else:
             cur.execute(
                 """
-                SELECT DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM, KEYFIELD
+                                SELECT DATASOURCE, LOGSYS, SEGID, POSIT, FIELDNM, KEYFIELD, DATATYPE, LENG, DECIMALS
                 FROM rsdssegfd
                 WHERE OBJVERS = 'A'
                   AND TRANSFER = 'X'
@@ -1699,12 +2360,18 @@ def fetch_rsds_field_inventory_for_pairs(
                 "ordered": [],
                 "field_set": set(),
                 "key_by_field": {},
+                "metadata_by_field": {},
             },
         )
         keyflag = str(row.get("KEYFIELD") or "").strip()
         seg_inventory["ordered"].append((field_name, keyflag))
         seg_inventory["field_set"].add(field_name)
         seg_inventory["key_by_field"][field_name] = keyflag
+        seg_inventory["metadata_by_field"][field_name] = {
+            "datatype": str(row.get("DATATYPE") or "").strip().upper(),
+            "length": _normalize_inventory_numeric_value(row.get("LENG")),
+            "decimals": _normalize_inventory_numeric_value(row.get("DECIMALS")),
+        }
 
     return inventory
 
@@ -1753,6 +2420,10 @@ def normalize_rsiobj_field_type_from_iobjtp(iobjtp: object) -> str:
 
 
 def fetch_rsiobj_type_lookup() -> Dict[str, str]:
+    global _RSIOBJ_TYPE_LOOKUP_CACHE
+    if _RSIOBJ_TYPE_LOOKUP_CACHE is not None:
+        return _RSIOBJ_TYPE_LOOKUP_CACHE
+
     if not table_exists("rsdiobj"):
         return {}
 
@@ -1782,6 +2453,7 @@ def fetch_rsiobj_type_lookup() -> Dict[str, str]:
         if not name:
             continue
         lookup[name] = normalize_rsiobj_field_type_from_iobjtp(row.get("IOBJTP"))
+    _RSIOBJ_TYPE_LOOKUP_CACHE = lookup
     return lookup
 
 
@@ -1868,6 +2540,7 @@ def build_dd03l_object_inventory(rows: List[Dict[str, object]], rsiobj_names: Se
         "ordered": [],
         "field_set": set(),
         "key_by_field": {},
+        "metadata_by_field": {},
     }
     resolved_rsiobj_names = rsiobj_names or set()
     use_rsiobj_matching = rsiobj_names is not None
@@ -1888,7 +2561,22 @@ def build_dd03l_object_inventory(rows: List[Dict[str, object]], rsiobj_names: Se
         seg_inventory["ordered"].append((field_name, keyflag))
         seg_inventory["field_set"].add(field_name)
         seg_inventory["key_by_field"][field_name] = keyflag
+        seg_inventory["metadata_by_field"][field_name] = {
+            "datatype": str(row.get("DATATYPE") or "").strip().upper(),
+            "length": _normalize_inventory_numeric_value(row.get("LENG")),
+            "decimals": _normalize_inventory_numeric_value(row.get("DECIMALS")),
+        }
     return {"": seg_inventory} if seg_inventory["ordered"] else {}
+
+
+def _normalize_inventory_numeric_value(value: object) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_rsoadso_activate_data_by_object(object_names: List[str]) -> Dict[str, str]:
@@ -1977,7 +2665,7 @@ def fetch_dd03l_rows_for_tabnames(tabnames: List[str]) -> List[Dict[str, object]
     try:
         cur.execute(
             f"""
-            SELECT TABNAME, POSITION, FIELDNAME, KEYFLAG
+                        SELECT TABNAME, POSITION, FIELDNAME, KEYFLAG, DATATYPE, LENG, DECIMALS
             FROM dd03l
             WHERE AS4LOCAL = 'A'
               AND TABNAME IN ({placeholders})
@@ -2119,7 +2807,7 @@ def fetch_trcs_field_inventory(object_names: List[str]) -> Dict[str, Dict[str, D
     try:
         cur.execute(
             f"""
-            SELECT ISOURCE, SEGID, POSIT, TYPE, FIELDNM, IOBJNM, KEYFLAG
+            SELECT ISOURCE, SEGID, POSIT, TYPE, FIELDNM, IOBJNM, KEYFLAG, DATATYPE, LENG, DECIMALS
             FROM rsksfieldnew
             WHERE OBJVERS = 'A' AND ISOURCE IN ({placeholders})
             ORDER BY ISOURCE,
@@ -2161,12 +2849,18 @@ def fetch_trcs_field_inventory(object_names: List[str]) -> Dict[str, Dict[str, D
                 "ordered": [],
                 "field_set": set(),
                 "key_by_field": {},
+                "metadata_by_field": {},
             },
         )
         keyflag = str(row.get("KEYFLAG") or "").strip()
         seg_inventory["ordered"].append((field_name, keyflag))
         seg_inventory["field_set"].add(field_name)
         seg_inventory["key_by_field"][field_name] = keyflag
+        seg_inventory["metadata_by_field"][field_name] = {
+            "datatype": str(row.get("DATATYPE") or "").strip().upper(),
+            "length": _normalize_inventory_numeric_value(row.get("LENG")),
+            "decimals": _normalize_inventory_numeric_value(row.get("DECIMALS")),
+        }
 
     return inventory
 
@@ -2234,7 +2928,7 @@ def fetch_iobj_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
     try:
         cur.execute(
             f"""
-            SELECT TABNAME, POSITION, FIELDNAME, KEYFLAG
+            SELECT TABNAME, POSITION, FIELDNAME, KEYFLAG, DATATYPE, LENG, DECIMALS
             FROM dd03l
             WHERE TABNAME IN ({placeholders})
             ORDER BY TABNAME,
@@ -2260,6 +2954,7 @@ def fetch_iobj_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
             "ordered": [],
             "field_set": set(),
             "key_by_field": {},
+            "metadata_by_field": {},
         }
         seen_fields: Set[str] = set()
         for table_name in build_iobj_dd03l_table_candidates(object_name):
@@ -2272,6 +2967,11 @@ def fetch_iobj_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
                 seg_inventory["ordered"].append((field_name, keyflag))
                 seg_inventory["field_set"].add(field_name)
                 seg_inventory["key_by_field"][field_name] = keyflag
+                seg_inventory["metadata_by_field"][field_name] = {
+                    "datatype": str(row.get("DATATYPE") or "").strip().upper(),
+                    "length": _normalize_inventory_numeric_value(row.get("LENG")),
+                    "decimals": _normalize_inventory_numeric_value(row.get("DECIMALS")),
+                }
         if seg_inventory["ordered"]:
             inventory[object_name] = {"": seg_inventory}
 
@@ -2320,6 +3020,63 @@ def inventory_keyflag(inventory_by_seg: Dict[str, Dict[str, object]], seg_id: st
     seg_key = str(seg_id or "").strip()
     seg_inventory = inventory_by_seg.get(seg_key) or inventory_by_seg.get("") or {}
     return str((seg_inventory.get("key_by_field") or {}).get(normalized_field) or "").strip()
+
+
+def inventory_field_metadata(
+    inventory_by_seg: Dict[str, Dict[str, object]],
+    seg_id: str,
+    field_name: str,
+    object_type: str = "",
+    rsiobj_names: Set[str] | None = None,
+) -> Dict[str, object]:
+    normalized_field = canonicalize_object_field_for_matching(field_name, object_type, rsiobj_names)
+    if not normalized_field:
+        return {"datatype": "", "length": None, "decimals": None}
+    seg_key = str(seg_id or "").strip()
+    seg_inventory = inventory_by_seg.get(seg_key) or inventory_by_seg.get("") or {}
+    metadata = (seg_inventory.get("metadata_by_field") or {}).get(normalized_field) or {}
+    return {
+        "datatype": str(metadata.get("datatype") or "").strip().upper(),
+        "length": metadata.get("length"),
+        "decimals": metadata.get("decimals"),
+    }
+
+
+def enrich_mapping_rows_with_inventory_field_metadata(
+    rows: List[Dict[str, object]],
+    source_inventory: Dict[str, Dict[str, object]],
+    source_type: str,
+    target_inventory: Dict[str, Dict[str, object]],
+    target_type: str,
+    rsiobj_names: Set[str] | None = None,
+) -> List[Dict[str, object]]:
+    if not rows:
+        return rows
+
+    for row in rows:
+        seg_id = str(row.get("seg_id") or "").strip()
+        source_meta = inventory_field_metadata(
+            source_inventory,
+            seg_id,
+            str(row.get("source_field") or "").strip(),
+            source_type,
+            rsiobj_names,
+        )
+        target_meta = inventory_field_metadata(
+            target_inventory,
+            seg_id,
+            str(row.get("target_field") or "").strip(),
+            target_type,
+            rsiobj_names,
+        )
+        row["source_datatype"] = source_meta.get("datatype")
+        row["source_length"] = source_meta.get("length")
+        row["source_decimals"] = source_meta.get("decimals")
+        row["target_datatype"] = target_meta.get("datatype")
+        row["target_length"] = target_meta.get("length")
+        row["target_decimals"] = target_meta.get("decimals")
+
+    return rows
 
 
 def inventory_field_already_mapped(mapped_keys: Set[Tuple[str, str]], seg_id: str, field_name: str) -> bool:
@@ -2805,6 +3562,73 @@ def rebuild_rstran_mapping_rule_table() -> Dict[str, int]:
 
 
 def ensure_auth_tables() -> None:
+    if IS_SQLITE:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS `users` (
+                  `username` TEXT NOT NULL,
+                  `password_hash` TEXT NOT NULL,
+                  `role` TEXT NOT NULL DEFAULT 'user',
+                  `is_locked` INTEGER NOT NULL DEFAULT 0,
+                  `failed_attempts` INTEGER NOT NULL DEFAULT 0,
+                  `temp_lock_until` TEXT NULL,
+                  `last_login_at` TEXT NULL,
+                  `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  `updated_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`username`)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS `user_sessions` (
+                  `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                  `username` TEXT NOT NULL,
+                  `session_hash` TEXT NOT NULL UNIQUE,
+                  `expires_at` TEXT NOT NULL,
+                  `revoked` INTEGER NOT NULL DEFAULT 0,
+                  `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  `last_seen_at` TEXT NULL,
+                  FOREIGN KEY (`username`) REFERENCES `users` (`username`) ON DELETE CASCADE
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS `auth_audit_logs` (
+                  `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                  `event_type` TEXT NOT NULL,
+                  `username` TEXT NULL,
+                  `actor` TEXT NULL,
+                  `success` INTEGER NOT NULL DEFAULT 1,
+                  `detail` TEXT NULL,
+                  `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.commit()
+
+            cur.execute("SELECT COUNT(*) FROM users")
+            has_user = int(cur.fetchone()[0]) > 0
+            if not has_user:
+                bootstrap_admin_username = normalize_username(DEFAULT_ADMIN_USERNAME) or "admin"
+                if not DEFAULT_ADMIN_PASSWORD:
+                    raise RuntimeError("DEFAULT_ADMIN_PASSWORD is required when bootstrapping the first admin user")
+                password_error = get_password_strength_error(DEFAULT_ADMIN_PASSWORD)
+                if password_error:
+                    raise RuntimeError(f"DEFAULT_ADMIN_PASSWORD is too weak: {password_error}")
+                cur.execute(
+                    "INSERT INTO users (username, password_hash, role, is_locked, failed_attempts) VALUES (%s, %s, 'admin', 0, 0)",
+                    (bootstrap_admin_username, hash_password(DEFAULT_ADMIN_PASSWORD)),
+                )
+                conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+        return
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -2886,6 +3710,25 @@ def ensure_auth_tables() -> None:
 
 
 def ensure_user_hidden_object_table() -> None:
+    if IS_SQLITE:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS `user_hidden_object` (
+                  `bw_object` TEXT NOT NULL,
+                  `sourcesys` TEXT NOT NULL DEFAULT '',
+                  `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`bw_object`, `sourcesys`)
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+        return
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -3057,6 +3900,17 @@ def resolve_user_from_request(request: Request) -> Dict[str, object] | None:
 
 
 def get_table_columns(table_name: str) -> List[str]:
+    if IS_SQLITE:
+        conn = get_conn()
+        resolved_name = sqlite_resolve_table_name(conn, table_name)
+        cur = conn.cursor()
+        try:
+            cur.execute(f"PRAGMA table_info(`{resolved_name}`)")
+            rows = cur.fetchall()
+            return [str(row[1] or "").strip() for row in rows if str(row[1] or "").strip()]
+        finally:
+            cur.close()
+            conn.close()
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -3075,6 +3929,27 @@ def get_table_columns(table_name: str) -> List[str]:
 
 
 def table_exists(table_name: str) -> bool:
+    normalized_table_name = str(table_name or "").strip().lower()
+    if not normalized_table_name:
+        return False
+    cached = _TABLE_EXISTS_CACHE.get(normalized_table_name)
+    if cached is not None:
+        return cached
+
+    if IS_SQLITE:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND LOWER(name) = LOWER(?) LIMIT 1",
+                (normalized_table_name,),
+            )
+            exists = bool(cur.fetchone())
+        finally:
+            cur.close()
+            conn.close()
+        _TABLE_EXISTS_CACHE[normalized_table_name] = exists
+        return exists
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -3087,13 +3962,52 @@ def table_exists(table_name: str) -> bool:
             """,
             (DB_CONFIG["database"], table_name),
         )
-        return bool(cur.fetchone())
+        exists = bool(cur.fetchone())
     finally:
         cur.close()
         conn.close()
+    _TABLE_EXISTS_CACHE[normalized_table_name] = exists
+    return exists
 
 
 def get_table_schema(table_name: str) -> List[Dict[str, object]]:
+    ensure_import_target_table_schema(table_name)
+    if IS_SQLITE:
+        conn = get_conn()
+        resolved_name = sqlite_resolve_table_name(conn, table_name)
+        cur = conn.cursor()
+        try:
+            cur.execute(f"PRAGMA table_info(`{resolved_name}`)")
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+
+        field_text_lookup = fetch_dd03t_table_field_text_lookup([table_name])
+        fallback_field_text_lookup = fetch_dd03t_field_text_fallback_lookup([str(row[1] or "") for row in rows])
+        normalized_table_name = str(table_name or "").strip().upper()
+        rs_field_text_lookup = fetch_rs_table_field_text_lookup_by_rollname(normalized_table_name) if normalized_table_name.startswith("RS") else {}
+        return [
+            {
+                "name": str(row[1] or "").strip(),
+                "comment": "",
+                "field_text": (
+                    rs_field_text_lookup.get(str(row[1] or "").strip().upper(), "")
+                    or field_text_lookup.get(
+                        (normalized_table_name, str(row[1] or "").strip().upper()),
+                        fallback_field_text_lookup.get(str(row[1] or "").strip().upper(), ""),
+                    )
+                ),
+                "data_type": str(row[2] or "").strip().lower(),
+                "column_type": str(row[2] or "").strip().lower(),
+                "default": row[4],
+                "nullable": int(row[3] or 0) == 0,
+                "is_key": int(row[5] or 0) > 0,
+                "ordinal_position": int(row[0] or 0) + 1,
+            }
+            for row in rows
+            if str(row[1] or "").strip()
+        ]
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     cur.execute(
@@ -3143,7 +4057,60 @@ def get_table_schema(table_name: str) -> List[Dict[str, object]]:
     ]
 
 
+def get_table_column_names(table_name: str) -> Set[str]:
+    normalized_table_name = str(table_name or "").strip().lower()
+    if not normalized_table_name:
+        return set()
+    cached = _TABLE_COLUMN_NAMES_CACHE.get(normalized_table_name)
+    if cached is not None:
+        return set(cached)
+
+    if IS_SQLITE:
+        conn = get_conn()
+        resolved_name = sqlite_resolve_table_name(conn, table_name)
+        cur = conn.cursor()
+        try:
+            cur.execute(f"PRAGMA table_info(`{resolved_name}`)")
+            rows = cur.fetchall()
+            columns = {str(row[1] or "").strip().upper() for row in rows if str(row[1] or "").strip()}
+        finally:
+            cur.close()
+            conn.close()
+    else:
+        conn = get_conn()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                """,
+                (DB_CONFIG["database"], table_name),
+            )
+            rows = cur.fetchall()
+            columns = {str(row.get("COLUMN_NAME") or "").strip().upper() for row in rows if str(row.get("COLUMN_NAME") or "").strip()}
+        finally:
+            cur.close()
+            conn.close()
+
+    _TABLE_COLUMN_NAMES_CACHE[normalized_table_name] = set(columns)
+    return columns
+
+
 def get_primary_keys(table_name: str) -> List[str]:
+    if IS_SQLITE:
+        conn = get_conn()
+        resolved_name = sqlite_resolve_table_name(conn, table_name)
+        cur = conn.cursor()
+        try:
+            cur.execute(f"PRAGMA table_info(`{resolved_name}`)")
+            rows = cur.fetchall()
+            pk_rows = sorted((row for row in rows if int(row[5] or 0) > 0), key=lambda item: int(item[5] or 0))
+            return [str(row[1] or "").strip() for row in pk_rows if str(row[1] or "").strip()]
+        finally:
+            cur.close()
+            conn.close()
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(f"SHOW KEYS FROM `{table_name}` WHERE Key_name = 'PRIMARY'")
@@ -3174,6 +4141,26 @@ def count_table_rows(table_name: str) -> int:
 
 
 def list_queryable_table_names() -> List[str]:
+    if IS_SQLITE:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            rows = cur.fetchall()
+        finally:
+            cur.close()
+            conn.close()
+
+        normalized_names = []
+        for row in rows:
+            table_name = str(row[0] or "").strip()
+            if not table_name or table_name.startswith("sqlite_"):
+                continue
+            normalized_name = table_name.lower()
+            if normalized_name in DATA_QUERY_EXCLUDED_TABLES or normalized_name.startswith("auth_"):
+                continue
+            normalized_names.append(normalized_name)
+        return sorted(set(normalized_names))
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -3617,6 +4604,8 @@ def build_text_capacity_alter_clauses(
 
 
 def ensure_import_text_capacity(table_name: str, schema_rows: List[Dict[str, object]], mapped_df: pd.DataFrame) -> None:
+    if IS_SQLITE:
+        return
     alter_clauses = build_text_capacity_alter_clauses(
         schema_rows,
         {
@@ -3646,6 +4635,8 @@ def ensure_import_row_text_capacity(
     rows: List[Tuple[object, ...]],
     only_columns: Set[str] | None = None,
 ) -> None:
+    if IS_SQLITE:
+        return
     values_by_column: Dict[str, List[object]] = {}
     selected_columns = {str(column or "").strip() for column in (only_columns or set()) if str(column or "").strip()}
     for index, column_name in enumerate(db_columns):
@@ -3829,7 +4820,7 @@ RAW_IMPORT_TABLES = {"rstranstepcnst", "rstransteprout"}
 FAST_IMPORT_UPSERT_TABLES = {"dd03l"}
 FAST_IMPORT_SKIP_EXISTING_KEY_SCAN_ROW_THRESHOLD = 20000
 IMPORT_READ_CHUNK_SIZE = max(250, int(os.getenv("IMPORT_READ_CHUNK_SIZE", "2000")))
-DD03L_FAST_WRITE_BATCH_SIZE = max(100, int(os.getenv("DD03L_FAST_WRITE_BATCH_SIZE", "200")))
+DD03L_FAST_WRITE_BATCH_SIZE = max(200, int(os.getenv("DD03L_FAST_WRITE_BATCH_SIZE", "1000")))
 
 
 def normalize_import_param(value: object, column_meta: Dict[str, object], table_name: str = "") -> object:
@@ -3887,6 +4878,142 @@ def extract_transformation_logic_details(start_routine: object, end_routine: obj
     return details
 
 
+def make_path_node_key(object_name: str, object_type: str = "", object_system: str = "") -> str:
+    normalized_name = normalize_bw_object_lookup(object_name)
+    normalized_type = normalize_type_code(object_type)
+    normalized_system = normalize_bw_object_lookup(object_system)
+    if normalized_type in {"RSDS", "DATASOURCE", "SOURCE"} and normalized_system:
+        return f"RSDS::{normalized_name}::{normalized_system}"
+    return normalized_name
+
+
+def get_segment_path_value(segment: PathSegmentRequest, field_name: str, legacy_name: str = "") -> Any:
+    value = getattr(segment, field_name, None)
+    if value is not None and value != "":
+        return value
+    if legacy_name:
+        return getattr(segment, legacy_name, None)
+    return None
+
+
+def get_segment_source_name(segment: PathSegmentRequest) -> str:
+    return str(get_segment_path_value(segment, "SOURCE", "source") or "").strip()
+
+
+def get_segment_target_name(segment: PathSegmentRequest) -> str:
+    return str(get_segment_path_value(segment, "TARGETNAME", "target") or "").strip()
+
+
+def get_segment_source_type(segment: PathSegmentRequest) -> str:
+    return str(get_segment_path_value(segment, "SOURCETYPE", "source_type") or "").strip()
+
+
+def get_segment_target_type(segment: PathSegmentRequest) -> str:
+    return str(get_segment_path_value(segment, "TARGETTYPE", "target_type") or "").strip()
+
+
+def get_segment_source_system(segment: PathSegmentRequest) -> str:
+    return str(get_segment_path_value(segment, "SOURCESYS", "source_system") or "").strip()
+
+
+def get_segment_target_system(segment: PathSegmentRequest) -> str:
+    return str(get_segment_path_value(segment, "TARGETSYSTEM", "target_system") or "").strip()
+
+
+def get_segment_tran_ids(segment: PathSegmentRequest) -> List[str]:
+    value = get_segment_path_value(segment, "TRANIDS", "tran_ids")
+    return list(value or [])
+
+
+def build_path_logic_entry_payload(entry: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "TRANID": str(entry.get("tran_id") or "").strip(),
+        "RULEID": int(entry.get("rule_id") or 0),
+        "STEPID": int(entry.get("step_id") or 0),
+        "KIND": str(entry.get("kind") or "").strip(),
+        "TITLE": str(entry.get("title") or "").strip(),
+        "CONTENT_RAW": str(entry.get("content_raw") or ""),
+        "CONTENT_DISPLAY": str(entry.get("content_display") or ""),
+        "LANGUAGE": str(entry.get("language") or "").strip(),
+        "ON_HANA": str(entry.get("on_hana") or "").strip(),
+        "CODE_ID": str(entry.get("code_id") or "").strip(),
+        "SOURCE_TABLE": str(entry.get("source_table") or "").strip(),
+        "IS_CONSTANT": bool(entry.get("is_constant")),
+    }
+
+
+def build_path_diagnostics_payload(diagnostics: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "OBJECT": str(diagnostics.get("object") or "").strip(),
+        "OBJECT_DISPLAY_NAME": str(diagnostics.get("object_display_name") or "").strip(),
+        "OBJECT_TYPE": str(diagnostics.get("object_type") or "").strip(),
+        "OBJECT_SYSTEM": str(diagnostics.get("object_system") or "").strip(),
+        "FIELD_KEY": str(diagnostics.get("field_key") or "").strip(),
+        "UNIQUE_FIELD_COUNT": int(diagnostics.get("unique_field_count") or 0),
+        "COMPARISON_AVAILABLE": bool(diagnostics.get("comparison_available")),
+        "INVENTORY_FIELD_COUNT": diagnostics.get("inventory_field_count"),
+        "DIFFERENCE_COUNT": diagnostics.get("difference_count"),
+        "MISSING_COUNT": diagnostics.get("missing_count"),
+        "EXTRA_COUNT": diagnostics.get("extra_count"),
+        "HAS_DIFFERENCE": bool(diagnostics.get("has_difference")),
+        "INVENTORY_ORIGIN": str(diagnostics.get("inventory_origin") or "").strip(),
+        "INVENTORY_LABEL": str(diagnostics.get("inventory_label") or "").strip(),
+        "ADSO_TABLE_SUFFIX": str(diagnostics.get("adso_table_suffix") or "").strip(),
+        "ADSO_TABLE_NAME": str(diagnostics.get("adso_table_name") or "").strip(),
+    }
+
+
+def build_path_mapping_row_payload(row: Dict[str, object]) -> Dict[str, object]:
+    logic_entries = [
+        build_path_logic_entry_payload(entry)
+        for entry in (row.get("logic_entries") or [])
+        if isinstance(entry, dict)
+    ]
+    return {
+        "TRANID": str(row.get("tran_id") or "").strip(),
+        "RULEID": int(row.get("rule_id") or 0),
+        "STEPID": int(row.get("step_id") or 0),
+        "SEGID": str(row.get("seg_id") or "").strip(),
+        "PAIR_INDEX": int(row.get("pair_index") or 0),
+        "RULEPOSIT": str(row.get("ruleposit") or "").strip(),
+        "SOURCE_FIELD": str(row.get("source_field") or "").strip(),
+        "TARGET_FIELD": str(row.get("target_field") or "").strip(),
+        "SOURCE_FIELDTYPE": str(row.get("source_fieldtype") or "").strip(),
+        "TARGET_FIELDTYPE": str(row.get("target_fieldtype") or "").strip(),
+        "SOURCE_TEXT": str(row.get("source_text") or "").strip(),
+        "TARGET_TEXT": str(row.get("target_text") or "").strip(),
+        "SOURCE_DATATYPE": str(row.get("source_datatype") or "").strip(),
+        "SOURCE_LENGTH": row.get("source_length"),
+        "SOURCE_DECIMALS": row.get("source_decimals"),
+        "TARGET_DATATYPE": str(row.get("target_datatype") or "").strip(),
+        "TARGET_LENGTH": row.get("target_length"),
+        "TARGET_DECIMALS": row.get("target_decimals"),
+        "SOURCE_KEY": str(row.get("source_key") or "").strip(),
+        "TARGET_KEY": str(row.get("target_key") or row.get("target_keyflag") or "").strip(),
+        "SOURCE_FIELD_ORIGIN": str(row.get("source_field_origin") or "").strip(),
+        "TARGET_FIELD_ORIGIN": str(row.get("target_field_origin") or "").strip(),
+        "SOURCE_FIELD_MATCHED": int(row.get("source_field_matched") or 0),
+        "TARGET_FIELD_MATCHED": int(row.get("target_field_matched") or 0),
+        "RULE": str(row.get("rule") or row.get("rule_type") or "").strip(),
+        "AGGR": str(row.get("aggr") or "").strip(),
+        "ROW_KIND": str(row.get("row_kind") or "").strip(),
+        "LOGIC_ENTRIES": logic_entries,
+        "HAS_LOGIC_ENTRY": bool(row.get("has_logic_entry")),
+    }
+
+
+def build_path_step_logic_group_payload(group: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "TRANID": str(group.get("tran_id") or "").strip(),
+        "ENTRY_COUNT": int(group.get("entry_count") or 0),
+        "ENTRIES": [
+            build_path_logic_entry_payload(entry)
+            for entry in (group.get("entries") or [])
+            if isinstance(entry, dict)
+        ],
+    }
+
+
 def append_or_update_edge(
     edges: List[Dict[str, object]],
     edge_by_key: Dict[Tuple[str, str, str, str], Dict[str, object]],
@@ -3894,37 +5021,47 @@ def append_or_update_edge(
     target_name: str,
     source_type: str,
     target_type: str,
+    source_system: str = "",
+    target_system: str = "",
     tran_id: object = None,
     start_routine: object = None,
     end_routine: object = None,
     expert: object = None,
+    source_node_key: str = "",
+    target_node_key: str = "",
 ) -> None:
-    edge_key = (source_name, target_name, source_type, target_type)
+    normalized_source_node_key = str(source_node_key or source_name or "").strip()
+    normalized_target_node_key = str(target_node_key or target_name or "").strip()
+    edge_key = (normalized_source_node_key, normalized_target_node_key, source_type, target_type)
     logic_details = extract_transformation_logic_details(start_routine, end_routine, expert)
     tran_id_text = str(tran_id or "").strip()
     existing = edge_by_key.get(edge_key)
     if existing is None:
         edge = {
-            "source": source_name,
-            "target": target_name,
-            "source_type": source_type,
-            "target_type": target_type,
-            "has_logic": bool(logic_details),
+            "SOURCE": source_name,
+            "TARGETNAME": target_name,
+            "SOURCETYPE": source_type,
+            "TARGETTYPE": target_type,
+            "SOURCESYS": str(source_system or "").strip(),
+            "TARGETSYSTEM": str(target_system or "").strip(),
+            "TRANIDS": [tran_id_text] if tran_id_text else [],
+            "LOGIC_IDS": [detail["id"] for detail in logic_details],
+            "HAS_LOGIC": bool(logic_details),
             "logic_details": logic_details,
-            "logic_ids": [detail["id"] for detail in logic_details],
-            "tran_ids": [tran_id_text] if tran_id_text else [],
+            "_source_node_key": normalized_source_node_key,
+            "_target_node_key": normalized_target_node_key,
         }
         edges.append(edge)
         edge_by_key[edge_key] = edge
         return
 
     if tran_id_text:
-        existing_tran_ids = existing.setdefault("tran_ids", [])
-        if tran_id_text not in existing_tran_ids:
-            existing_tran_ids.append(tran_id_text)
+        existing_tran_ids_upper = existing.setdefault("TRANIDS", [])
+        if tran_id_text not in existing_tran_ids_upper:
+            existing_tran_ids_upper.append(tran_id_text)
 
     if logic_details:
-        existing["has_logic"] = True
+        existing["HAS_LOGIC"] = True
         existing_details = existing.setdefault("logic_details", [])
         existing_keys = {(str(detail.get("kind") or ""), str(detail.get("id") or "")) for detail in existing_details}
         for detail in logic_details:
@@ -3933,7 +5070,7 @@ def append_or_update_edge(
                 continue
             existing_details.append(detail)
             existing_keys.add(detail_key)
-        existing["logic_ids"] = [detail.get("id", "") for detail in existing_details if str(detail.get("id") or "").strip()]
+        existing["LOGIC_IDS"] = [detail.get("id", "") for detail in existing_details if str(detail.get("id") or "").strip()]
 
 
 def fetch_bw_object_name_map(node_names: List[str]) -> Dict[str, str]:
@@ -3952,24 +5089,20 @@ def fetch_bw_object_name_map(node_names: List[str]) -> Dict[str, str]:
     cur = conn.cursor()
     object_name_map: Dict[str, str] = {}
     try:
-        batch_size = 500
-        for start in range(0, len(normalized_names), batch_size):
-            batch = normalized_names[start : start + batch_size]
-            placeholders = ",".join(["%s"] * len(batch))
-            cur.execute(
-                f"""
-                SELECT BW_OBJECT_NORM, MAX(NAME_EN) AS NAME_EN
-                FROM bw_object_name
-                WHERE BW_OBJECT_NORM IN ({placeholders})
-                GROUP BY BW_OBJECT_NORM
-                """,
-                tuple(batch),
-            )
-            for bw_object, object_name in cur.fetchall():
-                key = normalize_bw_object_lookup(bw_object)
-                value = str(object_name or "").strip()
-                if key and value:
-                    object_name_map[key] = value
+        cur.execute(
+            """
+            SELECT BW_OBJECT_NORM, MAX(NAME_EN) AS NAME_EN
+            FROM bw_object_name
+            WHERE BW_OBJECT_NORM IN (SELECT value FROM json_each(?))
+            GROUP BY BW_OBJECT_NORM
+            """,
+            (json.dumps(normalized_names),)
+        )
+        for bw_object, object_name in cur.fetchall():
+            key = normalize_bw_object_lookup(bw_object)
+            value = str(object_name or "").strip()
+            if key and value:
+                object_name_map[key] = value
     finally:
         cur.close()
         conn.close()
@@ -4028,6 +5161,69 @@ def fetch_path_selection_metadata_by_tran_id(tran_id: str) -> Dict[str, str]:
     }
 
 
+def fetch_path_selection_metadata_batch(tran_ids: List[str]) -> Dict[str, Dict[str, str]]:
+    """Fetch metadata for multiple TRANIDs in a single query."""
+    normalized_tran_ids = sorted({
+        str(tran_id or "").strip()
+        for tran_id in tran_ids
+        if str(tran_id or "").strip()
+    })
+    
+    if not normalized_tran_ids:
+        return {}
+    
+    result: Dict[str, Dict[str, str]] = {}
+    
+    # Try to get from active metadata first (batch)
+    active_metadata = fetch_active_tran_metadata()
+    for tran_id in normalized_tran_ids:
+        if tran_id in active_metadata:
+            meta = active_metadata[tran_id]
+            result[tran_id] = {
+                "tran_id": tran_id,
+                "source_type": normalize_type_code(meta.get("source_type")),
+                "target_type": normalize_type_code(meta.get("target_type")),
+                "source_object": normalize_bw_object_lookup(meta.get("source_object")),
+                "source_system": normalize_bw_object_lookup(meta.get("source_system")),
+                "target_object": normalize_bw_object_lookup(meta.get("target_object")),
+                "target_system": normalize_bw_object_lookup(meta.get("target_system")),
+            }
+    
+    # For remaining TRANIDs, query from materialized table
+    remaining_tran_ids = [tid for tid in normalized_tran_ids if tid not in result]
+    if remaining_tran_ids and table_exists(RSTRAN_MAPPING_RULE_FULL_TABLE):
+        placeholders = ", ".join(["%s"] * len(remaining_tran_ids))
+        conn = get_conn()
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(
+                f"""
+                SELECT DISTINCT tran_id, source_object, source_system, target_object, target_system, source_type, target_type
+                FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}`
+                WHERE UPPER(TRIM(tran_id)) IN ({placeholders})
+                """,
+                tuple(remaining_tran_ids),
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                tran_id = str(row.get("tran_id") or "").strip()
+                if tran_id and tran_id not in result:
+                    result[tran_id] = {
+                        "tran_id": tran_id,
+                        "source_type": normalize_type_code(row.get("source_type")),
+                        "target_type": normalize_type_code(row.get("target_type")),
+                        "source_object": normalize_bw_object_lookup(row.get("source_object")),
+                        "source_system": normalize_bw_object_lookup(row.get("source_system")),
+                        "target_object": normalize_bw_object_lookup(row.get("target_object")),
+                        "target_system": normalize_bw_object_lookup(row.get("target_system")),
+                    }
+        finally:
+            cur.close()
+            conn.close()
+    
+    return result
+
+
 def search_candidate_paths_by_tran_id(tran_id: str) -> Dict[str, object]:
     metadata = fetch_path_selection_metadata_by_tran_id(tran_id)
     normalized_tran_id = str(tran_id or "").strip()
@@ -4039,54 +5235,57 @@ def search_candidate_paths_by_tran_id(tran_id: str) -> Dict[str, object]:
     target_name = str(metadata.get("target_object") or "").strip()
     source_type = normalize_type_code(metadata.get("source_type"))
     target_type = normalize_type_code(metadata.get("target_type"))
-    resolved_start_name = resolve_rstran_start_name(source_name, source_system, source_type)
-    node_name_map = fetch_bw_object_name_map([resolved_start_name, target_name])
+    start_name = resolve_rstran_start_name(source_name, source_system, source_type)
+    node_name_map = fetch_bw_object_name_map([start_name, target_name])
 
     candidate_path = {
         "id": "path-1",
         "index": 1,
-        "segment_count": 1,
-        "node_sequence": [
+        "SEGMENT_COUNT": 1,
+        "NODE_SEQUENCE": [
             {
-                "id": resolved_start_name,
-                "object_name": node_name_map.get(normalize_bw_object_lookup(resolved_start_name), ""),
-                "type": source_type,
+                "id": start_name,
+                "OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(start_name), ""),
+                "TYPE": source_type,
+                "SOURCESYS": source_system,
             },
             {
                 "id": target_name,
-                "object_name": node_name_map.get(normalize_bw_object_lookup(target_name), ""),
-                "type": target_type,
+                "OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(target_name), ""),
+                "TYPE": target_type,
             },
         ],
-        "waypoints_hit": [],
-        "segments": [
+        "WAYPOINTS_HIT": [],
+        "SEGMENTS": [
             {
-                "source": resolved_start_name,
-                "target": target_name,
-                "source_type": source_type,
-                "target_type": target_type,
-                "source_object_name": node_name_map.get(normalize_bw_object_lookup(resolved_start_name), ""),
-                "target_object_name": node_name_map.get(normalize_bw_object_lookup(target_name), ""),
-                "tran_ids": [normalized_tran_id],
-                "logic_ids": [],
-                "has_logic": False,
+                "SOURCE": start_name,
+                "TARGETNAME": target_name,
+                "SOURCETYPE": source_type,
+                "TARGETTYPE": target_type,
+                "SOURCESYS": source_system,
+                "TARGETSYSTEM": str(metadata.get("target_system") or "").strip(),
+                "SOURCE_OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(start_name), ""),
+                "TARGET_OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(target_name), ""),
+                "TRANIDS": [normalized_tran_id],
+                "LOGIC_IDS": [],
+                "HAS_LOGIC": False,
             }
         ],
     }
 
     return {
-        "source_name": source_name,
-        "source_system": source_system,
-        "target_name": target_name,
-        "resolved_start_name": resolved_start_name,
-        "waypoints": [],
-        "candidate_paths": [candidate_path],
-        "candidate_count": 1,
-        "truncated": False,
-        "search_stats": {
-            "states_visited": 1,
-            "edge_count": 1,
-            "node_count": 2,
+        "SOURCE": source_name,
+        "SOURCESYS": source_system,
+        "TARGETNAME": target_name,
+        "WAYPOINTS": [],
+        "CANDIDATE_COUNT": 1,
+        "RESOLVED_START_NAME": start_name,
+        "CANDIDATE_PATHS": [candidate_path],
+        "TRUNCATED": False,
+        "SEARCH_STATS": {
+            "STATES_VISITED": 1,
+            "EDGE_COUNT": 1,
+            "NODE_COUNT": 2,
         },
     }
 
@@ -4094,63 +5293,51 @@ def search_candidate_paths_by_tran_id(tran_id: str) -> Dict[str, object]:
 def resolve_rstran_start_name(start_name: str, start_source: str = "", start_type: str = "") -> str:
     normalized_start_name = normalize_bw_object_lookup(start_name)
     normalized_source = normalize_bw_object_lookup(start_source)
-    normalized_type = normalize_type_code(start_type)
+    if not normalized_start_name:
+        return ""
 
-    resolved_start_name = normalized_start_name
-    candidate_names: List[str] = [normalized_start_name]
+    if not table_exists("rstran"):
+        return normalized_start_name
+
+    rstran_columns = set(get_table_columns("rstran"))
+    source_col = "SOURCE" if "SOURCE" in rstran_columns else ("DATASOURCE" if "DATASOURCE" in rstran_columns else "")
+    if not source_col:
+        return normalized_start_name
 
     conn = get_conn()
     cur = conn.cursor()
     try:
-        if normalized_source and normalized_start_name and table_exists("rstran"):
-            rstran_columns = set(get_table_columns("rstran"))
-            source_col = "SOURCE" if "SOURCE" in rstran_columns else ("DATASOURCE" if "DATASOURCE" in rstran_columns else "")
-            if source_col and "SOURCESYS" in rstran_columns:
-                cur.execute(
-                    f"""
-                    SELECT SOURCENAME
-                    FROM rstran
-                    WHERE UPPER(TRIM({source_col})) = UPPER(%s)
-                      AND UPPER(TRIM(SOURCESYS)) = UPPER(%s)
-                      AND SOURCENAME IS NOT NULL
-                      AND TRIM(SOURCENAME) <> ''
-                    ORDER BY TRANID
-                    LIMIT 1
-                    """,
-                    (normalized_start_name, normalized_source),
-                )
-                row = cur.fetchone()
-                if row and row[0]:
-                    resolved_start_name = str(row[0]).strip()
-
-        if resolved_start_name and resolved_start_name != normalized_start_name:
-            candidate_names.insert(0, resolved_start_name)
-
-        if normalized_source:
-            candidate_names.insert(0, f"{normalized_start_name} {normalized_source}".strip())
-
-        for candidate in candidate_names:
-            if not candidate:
-                continue
+        if normalized_source and "SOURCESYS" in rstran_columns:
             cur.execute(
-                """
+                f"""
                 SELECT 1
                 FROM rstran
-                WHERE UPPER(TRIM(SOURCENAME)) = UPPER(%s)
-                   OR UPPER(TRIM(TARGETNAME)) = UPPER(%s)
+                WHERE UPPER(TRIM({source_col})) = UPPER(?)
+                  AND UPPER(TRIM(COALESCE(SOURCESYS, ''))) = UPPER(?)
                 LIMIT 1
                 """,
-                (candidate, candidate),
+                (normalized_start_name, normalized_source),
             )
             if cur.fetchone():
-                resolved_start_name = candidate
-                if normalized_type in {"SOURCE", "DATASOURCE", "RSDS"} and normalized_source:
-                    break
+                return normalized_start_name
+
+        cur.execute(
+            f"""
+            SELECT 1
+            FROM rstran
+            WHERE UPPER(TRIM({source_col})) = UPPER(?)
+               OR UPPER(TRIM(TARGETNAME)) = UPPER(?)
+            LIMIT 1
+            """,
+            (normalized_start_name, normalized_start_name),
+        )
+        if cur.fetchone():
+            return normalized_start_name
     finally:
         cur.close()
         conn.close()
 
-    return resolved_start_name
+    return normalized_start_name
 
 
 def path_contains_waypoints(node_ids: List[str], waypoints: List[str]) -> bool:
@@ -4227,33 +5414,69 @@ def search_candidate_paths(
     if source_type == "RSDS" and not normalized_source_system:
         raise HTTPException(status_code=400, detail="当 Source 是数据源（RSDS）时，必须填写 Source system")
 
-    resolved_start_name = resolve_rstran_start_name(normalized_source_name, normalized_source_system, source_type)
+    rstran_columns = set(get_table_columns("rstran"))
+    source_col = "SOURCE" if "SOURCE" in rstran_columns else ("DATASOURCE" if "DATASOURCE" in rstran_columns else "")
+    if not source_col:
+        raise HTTPException(status_code=400, detail="RSTRAN 缺少 SOURCE 字段，无法按新规则生成路径")
 
+    start_name = resolve_rstran_start_name(normalized_source_name, normalized_source_system, source_type)
+    start_key = make_path_node_key(start_name, source_type, normalized_source_system)
+    target_key = make_path_node_key(normalized_target_name, "", "")
+
+    total_start = time.time()
     conn = get_conn()
     cur = conn.cursor()
     adjacency: Dict[str, List[Dict[str, object]]] = {}
     edge_by_key: Dict[Tuple[str, str, str, str], Dict[str, object]] = {}
     edges: List[Dict[str, object]] = []
-    node_types: Dict[str, str] = {resolved_start_name: source_type}
+    node_types: Dict[str, str] = {start_key: source_type}
+    node_labels: Dict[str, str] = {start_key: start_name}
+    node_systems: Dict[str, str] = {start_key: normalized_source_system}
 
     try:
+        step1_start = time.time()
         cur.execute(
-            """
-            SELECT SOURCENAME, TARGETNAME, SOURCETYPE, TARGETTYPE, TRANID, STARTROUTINE, ENDROUTINE, EXPERT
+            f"""
+            SELECT {source_col} AS SOURCE, SOURCESYS, TARGETNAME, SOURCETYPE, TARGETTYPE, TRANID, STARTROUTINE, ENDROUTINE, EXPERT
             FROM rstran
-            WHERE SOURCENAME IS NOT NULL AND TARGETNAME IS NOT NULL
-            ORDER BY TRANID
+            WHERE OBJVERS = 'A'
+              AND {source_col} IS NOT NULL
+              AND TARGETNAME IS NOT NULL
+            ORDER BY {source_col}, TRANID
             """
         )
+        step1_end = time.time()
+
+        step3_start = time.time()
         for row in cur.fetchall():
+            row_source_type = normalize_type_code(row[3])
+            row_target_type = normalize_type_code(row[4])
+
             source_value = str(row[0] or "").strip()
-            target_value = str(row[1] or "").strip()
+            source_system_value = ""
+            if row_source_type == "RSDS":
+                source_value, source_system_value = parse_rsds_identity(source_value, row[1])
+
+            target_value = str(row[2] or "").strip()
+            target_system_value = ""
+            if row_target_type == "RSDS":
+                target_value, target_system_value = parse_rsds_identity(target_value, None)
+
             if not source_value or not target_value:
                 continue
 
-            source_type = normalize_type_code(row[2])
-            target_type = normalize_type_code(row[3])
-            edge_key = (source_value, target_value, source_type, target_type)
+            source_node_key = make_path_node_key(source_value, row_source_type, source_system_value)
+            target_node_key = make_path_node_key(target_value, row_target_type, target_system_value)
+            node_labels[source_node_key] = source_value
+            node_labels[target_node_key] = target_value
+            node_types[source_node_key] = row_source_type or node_types.get(source_node_key, "UNKNOWN")
+            node_types[target_node_key] = row_target_type or node_types.get(target_node_key, "UNKNOWN")
+            if source_system_value:
+                node_systems[source_node_key] = source_system_value
+            if target_system_value:
+                node_systems[target_node_key] = target_system_value
+
+            edge_key = (source_node_key, target_node_key, row_source_type, row_target_type)
             is_new_edge = edge_key not in edge_by_key
 
             append_or_update_edge(
@@ -4261,49 +5484,53 @@ def search_candidate_paths(
                 edge_by_key,
                 source_value,
                 target_value,
-                source_type,
-                target_type,
-                row[4],
+                row_source_type,
+                row_target_type,
+                source_system_value,
+                target_system_value,
                 row[5],
                 row[6],
                 row[7],
+                row[8],
+                source_node_key=source_node_key,
+                target_node_key=target_node_key,
             )
 
-            node_types[source_value] = source_type or node_types.get(source_value, "UNKNOWN")
-            node_types[target_value] = target_type or node_types.get(target_value, "UNKNOWN")
-
             if is_new_edge and source_value != target_value:
-                adjacency.setdefault(source_value, []).append(edge_by_key[edge_key])
+                adjacency.setdefault(source_node_key, []).append(edge_by_key[edge_key])
+        step3_end = time.time()
     finally:
         cur.close()
         conn.close()
 
+    step4_start = time.time()
     candidate_paths: List[Dict[str, object]] = []
-    queue: deque[Tuple[List[str], List[Dict[str, object]]]] = deque()
-    queue.append(([resolved_start_name], []))
+    queue: deque[Tuple[List[str], List[str], List[Dict[str, object]]]] = deque()
+    queue.append(([start_key], [start_name], []))
     seen_signatures: Set[str] = set()
     states_visited = 0
     truncated = False
 
     while queue and len(candidate_paths) < max_paths:
-        node_path, edge_path = queue.popleft()
+        node_key_path, node_label_path, edge_path = queue.popleft()
         states_visited += 1
         if states_visited > max_states:
             truncated = True
             break
 
-        current_node = node_path[-1]
-        if current_node == normalized_target_name and edge_path:
-            if not path_contains_waypoints(node_path, normalized_waypoints):
+        current_node_key = node_key_path[-1]
+        if current_node_key == target_key and edge_path:
+            if not path_contains_waypoints(node_label_path, normalized_waypoints):
                 continue
-            signature = "=>".join(node_path)
+            signature = "=>".join(node_key_path)
             if signature in seen_signatures:
                 continue
             seen_signatures.add(signature)
             candidate_paths.append(
                 {
                     "id": f"path-{len(candidate_paths) + 1}",
-                    "node_ids": node_path,
+                    "node_ids": node_label_path,
+                    "node_keys": node_key_path,
                     "segment_count": len(edge_path),
                     "segments": [dict(segment) for segment in edge_path],
                 }
@@ -4313,34 +5540,43 @@ def search_candidate_paths(
         if len(edge_path) >= max_depth:
             continue
 
-        for edge in adjacency.get(current_node, []):
-            next_node = str(edge.get("target") or "").strip()
-            if not next_node or next_node in node_path:
+        for edge in adjacency.get(current_node_key, []):
+            next_node_key = str(edge.get("_target_node_key") or "").strip()
+            next_node_label = str(edge.get("TARGETNAME") or edge.get("target") or "").strip()
+            if not next_node_key or next_node_key in node_key_path:
                 continue
-            queue.append((node_path + [next_node], edge_path + [edge]))
+            queue.append((node_key_path + [next_node_key], node_label_path + [next_node_label], edge_path + [edge]))
 
+    step4_end = time.time()
+
+    step5_start = time.time()
     node_name_map = fetch_bw_object_name_map(
         [node_id for path in candidate_paths for node_id in path.get("node_ids", [])]
     )
+    step5_end = time.time()
 
+    step6_start = time.time()
     enriched_paths: List[Dict[str, object]] = []
     for index, path in enumerate(candidate_paths, start=1):
         node_ids = [str(node_id or "").strip() for node_id in path.get("node_ids", []) if str(node_id or "").strip()]
+        node_keys = [str(node_key or "").strip() for node_key in path.get("node_keys", []) if str(node_key or "").strip()]
         segments = []
         for segment in path.get("segments", []):
-            source_id = str(segment.get("source") or "").strip()
-            target_id = str(segment.get("target") or "").strip()
+            source_id = str(segment.get("SOURCE") or "").strip()
+            target_id = str(segment.get("TARGETNAME") or "").strip()
             segments.append(
                 {
-                    "source": source_id,
-                    "target": target_id,
-                    "source_type": str(segment.get("source_type") or node_types.get(source_id, "UNKNOWN")),
-                    "target_type": str(segment.get("target_type") or node_types.get(target_id, "UNKNOWN")),
-                    "source_object_name": node_name_map.get(normalize_bw_object_lookup(source_id), ""),
-                    "target_object_name": node_name_map.get(normalize_bw_object_lookup(target_id), ""),
-                    "tran_ids": [str(item).strip() for item in (segment.get("tran_ids") or []) if str(item).strip()],
-                    "logic_ids": [str(item).strip() for item in (segment.get("logic_ids") or []) if str(item).strip()],
-                    "has_logic": bool(segment.get("has_logic")),
+                    "SOURCE": source_id,
+                    "TARGETNAME": target_id,
+                    "SOURCETYPE": str(segment.get("SOURCETYPE") or node_types.get(str(segment.get("_source_node_key") or "").strip(), "UNKNOWN")),
+                    "TARGETTYPE": str(segment.get("TARGETTYPE") or node_types.get(str(segment.get("_target_node_key") or "").strip(), "UNKNOWN")),
+                    "SOURCESYS": str(segment.get("SOURCESYS") or "").strip(),
+                    "TARGETSYSTEM": str(segment.get("TARGETSYSTEM") or "").strip(),
+                    "SOURCE_OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(source_id), ""),
+                    "TARGET_OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(target_id), ""),
+                    "TRANIDS": [str(item).strip() for item in (segment.get("TRANIDS") or []) if str(item).strip()],
+                    "LOGIC_IDS": [str(item).strip() for item in (segment.get("LOGIC_IDS") or []) if str(item).strip()],
+                    "HAS_LOGIC": bool(segment.get("HAS_LOGIC")),
                 }
             )
 
@@ -4348,33 +5584,37 @@ def search_candidate_paths(
             {
                 "id": str(path.get("id") or f"path-{index}"),
                 "index": index,
-                "segment_count": int(path.get("segment_count") or len(segments)),
-                "node_sequence": [
+                "SEGMENT_COUNT": int(path.get("segment_count") or len(segments)),
+                "NODE_SEQUENCE": [
                     {
                         "id": node_id,
-                        "object_name": node_name_map.get(normalize_bw_object_lookup(node_id), ""),
-                        "type": node_types.get(node_id, "UNKNOWN"),
+                        "OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(node_id), ""),
+                        "TYPE": node_types.get(node_key, "UNKNOWN"),
+                        "SOURCESYS": node_systems.get(node_key, ""),
                     }
-                    for node_id in node_ids
+                    for node_key, node_id in zip(node_keys, node_ids)
                 ],
-                "waypoints_hit": [item for item in normalized_waypoints if item in {normalize_bw_object_lookup(node_id) for node_id in node_ids}],
-                "segments": segments,
+                "WAYPOINTS_HIT": [item for item in normalized_waypoints if item in {normalize_bw_object_lookup(node_id) for node_id in node_ids}],
+                "SEGMENTS": segments,
             }
         )
 
+    step6_end = time.time()
+    total_end = time.time()
+
     return {
-        "source_name": normalized_source_name,
-        "source_system": normalized_source_system,
-        "target_name": normalized_target_name,
-        "resolved_start_name": resolved_start_name,
-        "waypoints": normalized_waypoints,
-        "candidate_paths": enriched_paths,
-        "candidate_count": len(enriched_paths),
-        "truncated": truncated,
-        "search_stats": {
-            "states_visited": states_visited,
-            "edge_count": len(edges),
-            "node_count": len(node_types),
+        "SOURCE": normalized_source_name,
+        "SOURCESYS": normalized_source_system,
+        "TARGETNAME": normalized_target_name,
+        "WAYPOINTS": normalized_waypoints,
+        "CANDIDATE_COUNT": len(enriched_paths),
+        "RESOLVED_START_NAME": start_name,
+        "CANDIDATE_PATHS": enriched_paths,
+        "TRUNCATED": truncated,
+        "SEARCH_STATS": {
+            "STATES_VISITED": states_visited,
+            "EDGE_COUNT": len(edges),
+            "NODE_COUNT": len(node_types),
         },
     }
 
@@ -4967,13 +6207,12 @@ def sort_logic_entries(entries: List[Dict[str, object]]) -> List[Dict[str, objec
 def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
     normalized_tran_ids = sorted({str(item or "").strip() for item in (tran_ids or []) if str(item or "").strip()})
     if not normalized_tran_ids:
-        return {"step_programs": {}, "rule_entries": {}, "rule_entries_by_rule": {}}
+        return {"step_programs": {}, "rule_entries": {}}
 
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     step_programs_map: Dict[str, List[Dict[str, object]]] = defaultdict(list)
     rule_entries_map: Dict[Tuple[str, int, int], List[Dict[str, object]]] = defaultdict(list)
-    rule_entries_by_rule_map: Dict[Tuple[str, int], List[Dict[str, object]]] = defaultdict(list)
     try:
         placeholders = ",".join(["%s"] * len(normalized_tran_ids))
         upper_tran_ids = tuple(str(item).upper() for item in normalized_tran_ids)
@@ -5007,7 +6246,6 @@ def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
                 step_programs_map[tran_id].append(entry)
             else:
                 rule_entries_map[(tran_id, rule_id, step_id)].append(entry)
-                rule_entries_by_rule_map[(tran_id, rule_id)].append(entry)
 
         cur.execute(
             f"""
@@ -5033,7 +6271,6 @@ def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
                 is_constant=True,
             )
             rule_entries_map[(tran_id, rule_id, step_id)].append(entry)
-            rule_entries_by_rule_map[(tran_id, rule_id)].append(entry)
     finally:
         cur.close()
         conn.close()
@@ -5041,8 +6278,75 @@ def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
     return {
         "step_programs": {tran_id: sort_logic_entries(entries) for tran_id, entries in step_programs_map.items()},
         "rule_entries": {key: sort_logic_entries(entries) for key, entries in rule_entries_map.items()},
-        "rule_entries_by_rule": {key: sort_logic_entries(entries) for key, entries in rule_entries_by_rule_map.items()},
     }
+
+
+def fetch_tran_logic_summary(tran_ids: List[str]) -> Dict[str, object]:
+    normalized_tran_ids = sorted({str(item or "").strip() for item in (tran_ids or []) if str(item or "").strip()})
+    if not normalized_tran_ids:
+        return {"step_entry_count_by_tran": {}, "rule_entry_keys": set()}
+
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    step_entry_count_by_tran: Dict[str, int] = defaultdict(int)
+    rule_entry_keys: Set[Tuple[str, int, int]] = set()
+    try:
+        placeholders = ",".join(["%s"] * len(normalized_tran_ids))
+        upper_tran_ids = tuple(str(item).upper() for item in normalized_tran_ids)
+
+        cur.execute(
+            f"""
+            SELECT TRANID, RULEID, STEPID, KIND
+            FROM rstransteprout
+            WHERE UPPER(TRIM(TRANID)) IN ({placeholders})
+            ORDER BY TRANID, STEPID, RULEID, KIND
+            """,
+            upper_tran_ids,
+        )
+        for row in cur.fetchall():
+            tran_id = str(row.get("TRANID") or "").strip()
+            rule_id = int(row.get("RULEID") or 0)
+            step_id = int(row.get("STEPID") or 0)
+            kind = normalize_routine_kind(row.get("KIND"))
+            if kind in STEP_LEVEL_ROUTINE_KINDS:
+                step_entry_count_by_tran[tran_id] += 1
+            else:
+                rule_entry_keys.add((tran_id, rule_id, step_id))
+
+        cur.execute(
+            f"""
+            SELECT TRANID, RULEID, STEPID
+            FROM rstranstepcnst
+            WHERE UPPER(TRIM(TRANID)) IN ({placeholders})
+            ORDER BY TRANID, STEPID, RULEID
+            """,
+            upper_tran_ids,
+        )
+        for row in cur.fetchall():
+            tran_id = str(row.get("TRANID") or "").strip()
+            rule_id = int(row.get("RULEID") or 0)
+            step_id = int(row.get("STEPID") or 0)
+            rule_entry_keys.add((tran_id, rule_id, step_id))
+    finally:
+        cur.close()
+        conn.close()
+
+    return {
+        "step_entry_count_by_tran": dict(step_entry_count_by_tran),
+        "rule_entry_keys": rule_entry_keys,
+    }
+
+
+def normalize_segment_tran_ids(tran_ids: List[str] | None) -> List[str]:
+    normalized_tran_ids: List[str] = []
+    seen_tran_ids: Set[str] = set()
+    for item in tran_ids or []:
+        normalized_tran_id = str(item or "").strip()
+        if not normalized_tran_id or normalized_tran_id in seen_tran_ids:
+            continue
+        seen_tran_ids.add(normalized_tran_id)
+        normalized_tran_ids.append(normalized_tran_id)
+    return normalized_tran_ids
 
 
 def build_path_mapping_payload(
@@ -5050,37 +6354,74 @@ def build_path_mapping_payload(
     include_logic: bool = False,
     include_text: bool = False,
 ) -> Dict[str, object]:
+    total_start = time.time()
+    
     prepared_segments: List[Dict[str, object]] = []
-    object_names_for_display: List[str] = []
     adso_objects: Set[str] = set()
     odso_objects: Set[str] = set()
     trcs_objects: Set[str] = set()
     iobj_objects: Set[str] = set()
     rsds_pairs: Set[Tuple[str, str]] = set()
     all_tran_ids: Set[str] = set()
+    tran_metadata_cache: Dict[str, Dict[str, str]] = {}
 
+    step1_start = time.time()
+    
+    # Pre-fetch metadata for all TRANIDs in batch (SINGLE QUERY!)
+    all_requested_tran_ids: Set[str] = set()
     for segment in segments:
-        tran_ids = [str(item or "").strip() for item in (segment.tran_ids or []) if str(item or "").strip()]
-        segment_source = str(segment.source or "").strip()
-        segment_target = str(segment.target or "").strip()
-        segment_source_type = str(segment.source_type or "").strip()
-        segment_target_type = str(segment.target_type or "").strip()
-        source_system = ""
-        target_system = ""
+        tran_ids = normalize_segment_tran_ids(get_segment_tran_ids(segment))
+        all_requested_tran_ids.update(tran_ids)
+    
+    step1a_start = time.time()
+    tran_metadata_cache = fetch_path_selection_metadata_batch(list(all_requested_tran_ids))
+    step1a_end = time.time()
+    
+    step1b_start = time.time()
+    for segment in segments:
+        tran_ids = normalize_segment_tran_ids(get_segment_tran_ids(segment))
+        segment_source = get_segment_source_name(segment)
+        segment_target = get_segment_target_name(segment)
+        segment_source_type = get_segment_source_type(segment)
+        segment_target_type = get_segment_target_type(segment)
+        source_system = get_segment_source_system(segment)
+        target_system = get_segment_target_system(segment)
+
+        if tran_ids:
+            for tran_id in tran_ids:
+                normalized_tran_id = str(tran_id or "").strip()
+                if not normalized_tran_id:
+                    continue
+                if normalized_tran_id not in tran_metadata_cache:
+                    tran_metadata_cache[normalized_tran_id] = fetch_path_selection_metadata_by_tran_id(normalized_tran_id)
+                tran_meta = tran_metadata_cache.get(normalized_tran_id) or {}
+                if not tran_meta:
+                    continue
+                if not segment_source:
+                    segment_source = str(tran_meta.get("source_object") or "").strip()
+                if not segment_target:
+                    segment_target = str(tran_meta.get("target_object") or "").strip()
+                if not segment_source_type:
+                    segment_source_type = str(tran_meta.get("source_type") or "").strip()
+                if not segment_target_type:
+                    segment_target_type = str(tran_meta.get("target_type") or "").strip()
+                if not source_system:
+                    source_system = str(tran_meta.get("source_system") or "").strip()
+                if not target_system:
+                    target_system = str(tran_meta.get("target_system") or "").strip()
+                if segment_source and segment_target and segment_source_type and segment_target_type and (source_system or normalize_type_code(segment_source_type) != "RSDS"):
+                    break
+
         normalized_source_type = normalize_type_code(segment_source_type)
         normalized_target_type = normalize_type_code(segment_target_type)
 
         if normalized_source_type in {"RSDS", "DATASOURCE", "SOURCE"}:
-            segment_source, source_system = parse_rsds_identity(segment_source, "")
+            segment_source, source_system = parse_rsds_identity(segment_source, source_system)
         if normalized_target_type in {"RSDS", "DATASOURCE", "SOURCE"}:
-            segment_target, target_system = parse_rsds_identity(segment_target, "")
+            segment_target, target_system = parse_rsds_identity(segment_target, target_system)
 
         normalized_source = normalize_bw_object_lookup(segment_source)
         normalized_target = normalize_bw_object_lookup(segment_target)
-        if normalized_source:
-            object_names_for_display.append(normalized_source)
-        if normalized_target:
-            object_names_for_display.append(normalized_target)
 
         if normalized_source_type == "ADSO" and normalized_source:
             adso_objects.add(normalized_source)
@@ -5106,21 +6447,49 @@ def build_path_mapping_payload(
 
         prepared_segments.append(
             {
-                "source": segment_source,
-                "target": segment_target,
-                "source_type": segment_source_type,
-                "target_type": segment_target_type,
-                "source_system": source_system,
-                "target_system": target_system,
-                "tran_ids": tran_ids,
+                "SOURCE": segment_source,
+                "TARGETNAME": segment_target,
+                "SOURCETYPE": segment_source_type,
+                "TARGETTYPE": segment_target_type,
+                "SOURCESYS": source_system,
+                "TARGETSYSTEM": target_system,
+                "TRANIDS": tran_ids,
             }
         )
         all_tran_ids.update(tran_ids)
-
-    object_display_name_map = fetch_bw_object_name_map(object_names_for_display)
+    step1b_end = time.time()
+    step1_end = step1b_end
+    
+    step2_start = time.time()
+    rsds_name_lookup = fetch_rsds_object_text_lookup(sorted(rsds_pairs)) if rsds_pairs else {}
+    step2_end = time.time()
+    
+    step3_start = time.time()
+    adso_name_lookup = fetch_adso_object_text_lookup(sorted(adso_objects)) if adso_objects else {}
+    step3_end = time.time()
+    
+    step4_start = time.time()
+    trcs_name_lookup = fetch_trcs_object_text_lookup(sorted(trcs_objects)) if trcs_objects else {}
+    step4_end = time.time()
+    
+    step5_start = time.time()
+    iobj_name_lookup = fetch_iobj_object_text_lookup(sorted(iobj_objects)) if iobj_objects else {}
+    step5_end = time.time()
+    
+    step6_start = time.time()
+    object_display_name_map: Dict[str, str] = {}
     activate_data_by_object = fetch_rsoadso_activate_data_by_object(sorted(adso_objects)) if adso_objects else {}
+    step6_end = time.time()
+    
+    step7_start = time.time()
     rsds_inventory = fetch_rsds_field_inventory_for_pairs(sorted(rsds_pairs)) if rsds_pairs else {}
+    step7_end = time.time()
+    
+    step8_start = time.time()
     rsiobj_names = fetch_rsiobj_name_set() if (adso_objects or odso_objects) else set()
+    step8_end = time.time()
+    
+    step9_start = time.time()
     dd03l_inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
     if odso_objects:
         dd03l_inventory.update(fetch_odso_field_inventory_from_dd03l(sorted(odso_objects), rsiobj_names=rsiobj_names))
@@ -5132,35 +6501,116 @@ def build_path_mapping_payload(
                 rsiobj_names=rsiobj_names,
             )
         )
+    step9_end = time.time()
+    
+    step10_start = time.time()
     trcs_inventory = fetch_trcs_field_inventory(sorted(trcs_objects)) if trcs_objects else {}
+    step10_end = time.time()
+    
+    step11_start = time.time()
     iobj_inventory = fetch_iobj_field_inventory_from_dd03l(sorted(iobj_objects)) if iobj_objects else {}
+    step11_end = time.time()
+    
+    step12_start = time.time()
     tran_mapping_rows_by_tran = fetch_materialized_tran_mapping_rows_batch(sorted(all_tran_ids)) if all_tran_ids else {}
+    step12_end = time.time()
+    
+    step13_start = time.time()
     logic_details = (
         fetch_tran_logic_details(sorted(all_tran_ids))
         if include_logic and all_tran_ids
-        else {"step_programs": {}, "rule_entries": {}, "rule_entries_by_rule": {}}
+        else {"step_programs": {}, "rule_entries": {}}
     )
+    step13_end = time.time()
+    
+    step14_start = time.time()
+    logic_summary = fetch_tran_logic_summary(sorted(all_tran_ids)) if all_tran_ids else {"step_entry_count_by_tran": {}, "rule_entry_keys": set()}
+    step14_end = time.time()
     step_programs_by_tran = logic_details.get("step_programs") or {}
     rule_entries_by_key = logic_details.get("rule_entries") or {}
-    rule_entries_by_rule = logic_details.get("rule_entries_by_rule") or {}
+    step_entry_count_by_tran = logic_summary.get("step_entry_count_by_tran") or {}
+    rule_entry_keys = logic_summary.get("rule_entry_keys") or set()
+    rsiobj_type_lookup = fetch_rsiobj_type_lookup() if include_text else {}
+    step15_start = time.time()
+    field_text_lookup_cache: Dict[Tuple[str, str, str], Dict[Tuple[str, str], str]] = {}
+    tran_name_lookup = fetch_rstrant_text_lookup(sorted(all_tran_ids)) if all_tran_ids else {}
 
     items: List[Dict[str, object]] = []
     for index, segment in enumerate(prepared_segments, start=1):
-        tran_ids = segment.get("tran_ids") or []
+        tran_ids = segment.get("TRANIDS") or []
         mapping_rows: List[Dict[str, object]] = []
         for tran_id in tran_ids:
             normalized_tran_id = str(tran_id or "").strip()
             if normalized_tran_id:
                 mapping_rows.extend(tran_mapping_rows_by_tran.get(normalized_tran_id, []))
 
-        segment_source = str(segment.get("source") or "").strip()
-        segment_target = str(segment.get("target") or "").strip()
-        segment_source_type = str(segment.get("source_type") or "").strip()
-        segment_target_type = str(segment.get("target_type") or "").strip()
-        source_system = str(segment.get("source_system") or "").strip()
-        target_system = str(segment.get("target_system") or "").strip()
+        segment_source = str(segment.get("SOURCE") or "").strip()
+        segment_target = str(segment.get("TARGETNAME") or "").strip()
+        segment_source_type = str(segment.get("SOURCETYPE") or "").strip()
+        segment_target_type = str(segment.get("TARGETTYPE") or "").strip()
+        source_system = str(segment.get("SOURCESYS") or "").strip()
+        target_system = str(segment.get("TARGETSYSTEM") or "").strip()
+        source_display_name = resolve_path_object_display_name(
+            segment_source,
+            source_system,
+            segment_source_type,
+            rsds_name_lookup=rsds_name_lookup,
+            adso_name_lookup=adso_name_lookup,
+            trcs_name_lookup=trcs_name_lookup,
+            iobj_name_lookup=iobj_name_lookup,
+        )
+        target_display_name = resolve_path_object_display_name(
+            segment_target,
+            target_system,
+            segment_target_type,
+            rsds_name_lookup=rsds_name_lookup,
+            adso_name_lookup=adso_name_lookup,
+            trcs_name_lookup=trcs_name_lookup,
+            iobj_name_lookup=iobj_name_lookup,
+        )
+        normalized_segment_source = normalize_bw_object_lookup(segment_source)
+        normalized_segment_target = normalize_bw_object_lookup(segment_target)
+        if normalized_segment_source and source_display_name and normalized_segment_source not in object_display_name_map:
+            object_display_name_map[normalized_segment_source] = source_display_name
+        if normalized_segment_target and target_display_name and normalized_segment_target not in object_display_name_map:
+            object_display_name_map[normalized_segment_target] = target_display_name
 
         if include_text:
+            source_field_names = {
+                normalize_field_name(row.get("source_field"))
+                for row in mapping_rows
+                if normalize_field_name(row.get("source_field"))
+            }
+            target_field_names = {
+                normalize_field_name(row.get("target_field"))
+                for row in mapping_rows
+                if normalize_field_name(row.get("target_field"))
+            }
+            seg_ids = {
+                str(row.get("seg_id") or "").strip()
+                for row in mapping_rows
+                if str(row.get("seg_id") or "").strip()
+            }
+
+            source_lookup_key = (segment_source, source_system, segment_source_type)
+            target_lookup_key = (segment_target, target_system, segment_target_type)
+            if source_lookup_key not in field_text_lookup_cache:
+                field_text_lookup_cache[source_lookup_key] = build_field_text_lookup_for_object(
+                    segment_source,
+                    source_system,
+                    segment_source_type,
+                    field_names=source_field_names,
+                    seg_ids=seg_ids,
+                ) or {}
+            if target_lookup_key not in field_text_lookup_cache:
+                field_text_lookup_cache[target_lookup_key] = build_field_text_lookup_for_object(
+                    segment_target,
+                    target_system,
+                    segment_target_type,
+                    field_names=target_field_names,
+                    seg_ids=seg_ids,
+                ) or {}
+
             mapping_rows = enrich_mapping_rows_with_field_text(
                 mapping_rows,
                 segment_source,
@@ -5169,6 +6619,9 @@ def build_path_mapping_payload(
                 segment_target,
                 target_system,
                 segment_target_type,
+                source_lookup=field_text_lookup_cache.get(source_lookup_key, {}),
+                target_lookup=field_text_lookup_cache.get(target_lookup_key, {}),
+                rsiobj_type_lookup=rsiobj_type_lookup,
             )
 
         if include_logic:
@@ -5177,14 +6630,16 @@ def build_path_mapping_payload(
                 rule_id = int(row.get("rule_id") or 0)
                 step_id = int(row.get("step_id") or 0)
                 logic_entries = rule_entries_by_key.get((tran_id, rule_id, step_id), [])
-                if not logic_entries and tran_id and rule_id:
-                    logic_entries = rule_entries_by_rule.get((tran_id, rule_id), [])
                 row["logic_entries"] = logic_entries
                 row["has_logic_entry"] = bool(logic_entries)
         else:
             for row in mapping_rows:
+                tran_id = str(row.get("tran_id") or "").strip()
+                rule_id = int(row.get("rule_id") or 0)
+                step_id = int(row.get("step_id") or 0)
+                has_logic_entry = (tran_id, rule_id, step_id) in rule_entry_keys
                 row["logic_entries"] = []
-                row["has_logic_entry"] = False
+                row["has_logic_entry"] = has_logic_entry
 
         segment_step_logic = []
         if include_logic:
@@ -5193,11 +6648,27 @@ def build_path_mapping_payload(
                 if not entries:
                     continue
                 segment_step_logic.append(
-                    {
-                        "tran_id": str(tran_id or "").strip(),
-                        "entry_count": len(entries),
-                        "entries": entries,
-                    }
+                    build_path_step_logic_group_payload(
+                        {
+                            "tran_id": str(tran_id or "").strip(),
+                            "entry_count": len(entries),
+                            "entries": entries,
+                        }
+                    )
+                )
+        else:
+            for tran_id in tran_ids:
+                entry_count = int(step_entry_count_by_tran.get(str(tran_id or "").strip()) or 0)
+                if entry_count <= 0:
+                    continue
+                segment_step_logic.append(
+                    build_path_step_logic_group_payload(
+                        {
+                            "tran_id": str(tran_id or "").strip(),
+                            "entry_count": entry_count,
+                            "entries": [],
+                        }
+                    )
                 )
 
         source_diagnostics = build_object_field_diagnostics(
@@ -5228,34 +6699,233 @@ def build_path_mapping_payload(
             activate_data_by_object,
             rsiobj_names,
         )
+        source_inventory, _source_supported, _source_inventory_origin = get_supported_inventory_for_object(
+            segment_source,
+            source_system,
+            segment_source_type,
+            rsds_inventory,
+            dd03l_inventory,
+            trcs_inventory,
+            iobj_inventory,
+        )
+        target_inventory, _target_supported, _target_inventory_origin = get_supported_inventory_for_object(
+            segment_target,
+            target_system,
+            segment_target_type,
+            rsds_inventory,
+            dd03l_inventory,
+            trcs_inventory,
+            iobj_inventory,
+        )
+        mapping_rows = enrich_mapping_rows_with_inventory_field_metadata(
+            mapping_rows,
+            source_inventory,
+            segment_source_type,
+            target_inventory,
+            segment_target_type,
+            rsiobj_names,
+        )
 
         items.append(
             {
-                "index": index,
-                "source": segment_source,
-                "target": segment_target,
-                "source_type": segment_source_type,
-                "target_type": segment_target_type,
-                "source_system": source_system,
-                "target_system": target_system,
-                "source_display_name": str(object_display_name_map.get(normalize_bw_object_lookup(segment_source)) or "").strip(),
-                "target_display_name": str(object_display_name_map.get(normalize_bw_object_lookup(segment_target)) or "").strip(),
-                "tran_ids": tran_ids,
-                "rows": mapping_rows,
-                "step_logic": segment_step_logic,
-                "step_logic_entry_count": sum(int(item.get("entry_count") or 0) for item in segment_step_logic),
-                "diagnostics": {
-                    "source": source_diagnostics,
-                    "target": target_diagnostics,
+                "INDEX": index,
+                "SOURCE": segment_source,
+                "TARGETNAME": segment_target,
+                "SOURCETYPE": segment_source_type,
+                "TARGETTYPE": segment_target_type,
+                "SOURCESYS": source_system,
+                "TARGETSYSTEM": target_system,
+                "SOURCE_DISPLAY_NAME": source_display_name,
+                "TARGET_DISPLAY_NAME": target_display_name,
+                "TRANIDS": tran_ids,
+                "TR_NAMES": [str(tran_name_lookup.get(str(tran_id or "").strip()) or "").strip() for tran_id in tran_ids if str(tran_id or "").strip()],
+                "ROWS": [build_path_mapping_row_payload(row) for row in mapping_rows],
+                "STEP_LOGIC": segment_step_logic,
+                "STEP_LOGIC_ENTRY_COUNT": sum(int(item.get("ENTRY_COUNT") or 0) for item in segment_step_logic),
+                "DIAGNOSTICS": {
+                    "SOURCE": build_path_diagnostics_payload(source_diagnostics),
+                    "TARGET": build_path_diagnostics_payload(target_diagnostics),
                 },
+            }
+        )
+    step15_end = time.time()
+
+    result = {
+        "SEGMENT_COUNT": len(items),
+        "SEGMENTS": items,
+        "INCLUDE_LOGIC": bool(include_logic),
+        "INCLUDE_TEXT": bool(include_text),
+    }
+    
+    total_end = time.time()
+    
+    return result
+
+
+def build_path_text_payload(segments: List[PathSegmentRequest]) -> Dict[str, object]:
+    if not segments:
+        return {
+            "SEGMENT_COUNT": 0,
+            "SEGMENTS": [],
+            "INCLUDE_TEXT": True,
+        }
+
+    mapping_payload = build_path_mapping_payload(
+        segments,
+        include_logic=False,
+        include_text=True,
+    )
+
+    text_segments: List[Dict[str, object]] = []
+    for index, segment in enumerate(mapping_payload.get("SEGMENTS") or [], start=1):
+        rows = []
+        for row in segment.get("ROWS") or []:
+            rows.append(
+                {
+                    "TRANID": str(row.get("TRANID") or "").strip(),
+                    "RULEID": int(row.get("RULEID") or 0),
+                    "STEPID": int(row.get("STEPID") or 0),
+                    "SEGID": str(row.get("SEGID") or "").strip(),
+                    "PAIR_INDEX": int(row.get("PAIR_INDEX") or 0),
+                    "SOURCE_FIELD": str(row.get("SOURCE_FIELD") or "").strip(),
+                    "TARGET_FIELD": str(row.get("TARGET_FIELD") or "").strip(),
+                    "SOURCE_TEXT": str(row.get("SOURCE_TEXT") or "").strip(),
+                    "TARGET_TEXT": str(row.get("TARGET_TEXT") or "").strip(),
+                }
+            )
+
+        text_segments.append(
+            {
+                "INDEX": int(segment.get("INDEX") or index),
+                "SOURCE": str(segment.get("SOURCE") or "").strip(),
+                "TARGETNAME": str(segment.get("TARGETNAME") or "").strip(),
+                "SOURCETYPE": str(segment.get("SOURCETYPE") or "").strip(),
+                "TARGETTYPE": str(segment.get("TARGETTYPE") or "").strip(),
+                "SOURCESYS": str(segment.get("SOURCESYS") or "").strip(),
+                "TARGETSYSTEM": str(segment.get("TARGETSYSTEM") or "").strip(),
+                "TRANIDS": [str(item or "").strip() for item in (segment.get("TRANIDS") or []) if str(item or "").strip()],
+                "TR_NAMES": [str(item or "").strip() for item in (segment.get("TR_NAMES") or []) if str(item or "").strip()],
+                "ROWS": rows,
             }
         )
 
     return {
-        "segment_count": len(items),
-        "segments": items,
-        "include_logic": bool(include_logic),
-        "include_text": bool(include_text),
+        "SEGMENT_COUNT": len(text_segments),
+        "SEGMENTS": text_segments,
+        "INCLUDE_TEXT": True,
+    }
+
+
+def build_path_logic_payload(segments: List[PathSegmentRequest]) -> Dict[str, object]:
+    if not segments:
+        return {
+            "SEGMENT_COUNT": 0,
+            "SEGMENTS": [],
+            "INCLUDE_LOGIC": True,
+        }
+
+    prepared_segments: List[Dict[str, object]] = []
+    all_tran_ids: Set[str] = set()
+    for segment in segments:
+        tran_ids = normalize_segment_tran_ids(get_segment_tran_ids(segment))
+        segment_source = get_segment_source_name(segment)
+        segment_target = get_segment_target_name(segment)
+        segment_source_type = get_segment_source_type(segment)
+        segment_target_type = get_segment_target_type(segment)
+        source_system = get_segment_source_system(segment)
+        target_system = get_segment_target_system(segment)
+        normalized_source_type = normalize_type_code(segment_source_type)
+        normalized_target_type = normalize_type_code(segment_target_type)
+
+        if normalized_source_type in {"RSDS", "DATASOURCE", "SOURCE"}:
+            segment_source, source_system = parse_rsds_identity(segment_source, source_system)
+        if normalized_target_type in {"RSDS", "DATASOURCE", "SOURCE"}:
+            segment_target, target_system = parse_rsds_identity(segment_target, target_system)
+
+        prepared_segments.append(
+            {
+                "SOURCE": segment_source,
+                "TARGETNAME": segment_target,
+                "SOURCETYPE": segment_source_type,
+                "TARGETTYPE": segment_target_type,
+                "SOURCESYS": source_system,
+                "TARGETSYSTEM": target_system,
+                "TRANIDS": tran_ids,
+            }
+        )
+        all_tran_ids.update(tran_ids)
+
+    tran_mapping_rows_by_tran = fetch_materialized_tran_mapping_rows_batch(sorted(all_tran_ids)) if all_tran_ids else {}
+    logic_details = fetch_tran_logic_details(sorted(all_tran_ids)) if all_tran_ids else {"step_programs": {}, "rule_entries": {}}
+    step_programs_by_tran = logic_details.get("step_programs") or {}
+    rule_entries_by_key = logic_details.get("rule_entries") or {}
+    tran_name_lookup = fetch_rstrant_text_lookup(sorted(all_tran_ids)) if all_tran_ids else {}
+
+    logic_segments: List[Dict[str, object]] = []
+    for index, segment in enumerate(prepared_segments, start=1):
+        tran_ids = segment.get("TRANIDS") or []
+        mapping_rows: List[Dict[str, object]] = []
+        for tran_id in tran_ids:
+            normalized_tran_id = str(tran_id or "").strip()
+            if normalized_tran_id:
+                mapping_rows.extend(tran_mapping_rows_by_tran.get(normalized_tran_id, []))
+
+        rows = []
+        for row in mapping_rows:
+            tran_id = str(row.get("tran_id") or "").strip()
+            rule_id = int(row.get("rule_id") or 0)
+            step_id = int(row.get("step_id") or 0)
+            logic_entries = rule_entries_by_key.get((tran_id, rule_id, step_id), [])
+            rows.append(
+                {
+                    "TRANID": tran_id,
+                    "RULEID": rule_id,
+                    "STEPID": step_id,
+                    "SEGID": str(row.get("seg_id") or "").strip(),
+                    "PAIR_INDEX": int(row.get("pair_index") or 0),
+                    "SOURCE_FIELD": str(row.get("source_field") or "").strip(),
+                    "TARGET_FIELD": str(row.get("target_field") or "").strip(),
+                    "LOGIC_ENTRIES": [build_path_logic_entry_payload(entry) for entry in logic_entries],
+                    "HAS_LOGIC_ENTRY": bool(logic_entries),
+                }
+            )
+
+        step_logic = []
+        for tran_id in tran_ids:
+            entries = step_programs_by_tran.get(str(tran_id or "").strip(), [])
+            if not entries:
+                continue
+            step_logic.append(
+                build_path_step_logic_group_payload(
+                    {
+                        "tran_id": str(tran_id or "").strip(),
+                        "entry_count": len(entries),
+                        "entries": list(entries),
+                    }
+                )
+            )
+
+        logic_segments.append(
+            {
+                "INDEX": int(segment.get("INDEX") or index),
+                "SOURCE": str(segment.get("SOURCE") or "").strip(),
+                "TARGETNAME": str(segment.get("TARGETNAME") or "").strip(),
+                "SOURCETYPE": str(segment.get("SOURCETYPE") or "").strip(),
+                "TARGETTYPE": str(segment.get("TARGETTYPE") or "").strip(),
+                "SOURCESYS": str(segment.get("SOURCESYS") or "").strip(),
+                "TARGETSYSTEM": str(segment.get("TARGETSYSTEM") or "").strip(),
+                "TRANIDS": [str(item or "").strip() for item in (segment.get("TRANIDS") or []) if str(item or "").strip()],
+                "TR_NAMES": [str(tran_name_lookup.get(str(item or "").strip()) or "").strip() for item in (segment.get("TRANIDS") or []) if str(item or "").strip()],
+                "ROWS": rows,
+                "STEP_LOGIC": step_logic,
+                "STEP_LOGIC_ENTRY_COUNT": sum(int(item.get("ENTRY_COUNT") or 0) for item in step_logic),
+            }
+        )
+
+    return {
+        "SEGMENT_COUNT": len(logic_segments),
+        "SEGMENTS": logic_segments,
+        "INCLUDE_LOGIC": True,
     }
 
 
@@ -5324,6 +6994,8 @@ def _build_graph_engine_by_source(start_name: str, max_nodes: int = 2000, max_ed
                             target_name,
                             source_type,
                             target_type,
+                            "",
+                            "",
                             tran_id,
                             start_routine,
                             end_routine,
@@ -5337,6 +7009,8 @@ def _build_graph_engine_by_source(start_name: str, max_nodes: int = 2000, max_ed
                             target_name,
                             source_type,
                             target_type,
+                            "",
+                            "",
                             tran_id,
                             start_routine,
                             end_routine,
@@ -5512,6 +7186,8 @@ def build_graph_both(start_name: str, max_nodes: int = 2000, max_edges: int = 50
                         target_name,
                         source_type,
                         target_type,
+                        "",
+                        "",
                         tran_id,
                         start_routine,
                         end_routine,
@@ -5565,6 +7241,8 @@ def build_graph_both(start_name: str, max_nodes: int = 2000, max_edges: int = 50
                         target_name,
                         source_type,
                         target_type,
+                        "",
+                        "",
                         tran_id,
                         start_routine,
                         end_routine,
@@ -5741,6 +7419,8 @@ def build_graph_full(start_name: str, max_nodes: int = 2000, max_edges: int = 50
                     target_name,
                     source_type,
                     target_type,
+                    "",
+                    "",
                     tran_id,
                     start_routine,
                     end_routine,
@@ -5755,6 +7435,8 @@ def build_graph_full(start_name: str, max_nodes: int = 2000, max_edges: int = 50
                 target_name,
                 source_type,
                 target_type,
+                "",
+                "",
                 tran_id,
                 start_routine,
                 end_routine,
@@ -5903,6 +7585,8 @@ def _build_graph_engine_by_target(start_name: str, max_nodes: int = 2000, max_ed
                         target_name,
                         source_type,
                         target_type,
+                        "",
+                        "",
                         tran_id,
                         start_routine,
                         end_routine,
@@ -5994,6 +7678,40 @@ def _build_graph_engine_by_target(start_name: str, max_nodes: int = 2000, max_ed
 
 
 def upsert_status(table_name: str, item_count: int = 0) -> Dict[str, str | int]:
+    if IS_SQLITE:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            last_import_at = utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute(
+                """
+                INSERT INTO import_status (table_name, last_import_at, last_import_count)
+                VALUES (%s, %s, %s)
+                ON CONFLICT(table_name) DO UPDATE SET
+                  last_import_at = excluded.last_import_at,
+                  last_import_count = excluded.last_import_count,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                (table_name, last_import_at, item_count),
+            )
+            conn.commit()
+            cur.execute(
+                "SELECT last_import_at, last_import_count FROM import_status WHERE table_name = %s",
+                (table_name,),
+            )
+            row = cur.fetchone()
+        finally:
+            cur.close()
+            conn.close()
+
+        last_update = "--"
+        if row and row[0]:
+            parsed = parse_datetime_like(row[0])
+            last_update = parsed.strftime("%Y-%m-%d %H:%M") if isinstance(parsed, datetime) else str(row[0])[:16].replace("T", " ")
+        return {
+            "last_update": last_update,
+            "last_count": int(row[1]) if row and row[1] is not None else 0,
+        }
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -6195,6 +7913,11 @@ async def auth_guard(request: Request, call_next):
 
 @app.on_event("startup")
 def startup() -> None:
+    if IS_SQLITE:
+        ensure_status_table()
+        ensure_auth_tables()
+        ensure_user_hidden_object_table()
+        return
     ensure_status_table()
     migrate_legacy_infoobject_tables()
     ensure_rstran_schema()
@@ -6214,6 +7937,7 @@ def startup() -> None:
     ensure_rsksnewt_schema()
     ensure_rsksfieldnew_schema()
     ensure_rsksfieldnewt_schema()
+    ensure_rstrant_schema()
     ensure_rstranstepcnst_schema()
     ensure_rstransteprout_schema()
     ensure_auth_tables()
@@ -6571,6 +8295,7 @@ def get_import_schema(table_name: str = Query(...)) -> Dict[str, object]:
     if normalized_name not in IMPORT_SCHEMA_TABLES:
         raise HTTPException(status_code=400, detail="Unsupported table_name")
 
+    ensure_import_target_table_schema(normalized_name)
     columns = get_table_schema(normalized_name)
     if not columns:
         raise HTTPException(status_code=404, detail=f"Target table not found: {normalized_name}")
@@ -6622,11 +8347,11 @@ def upsert_import_status(payload: ImportStatusUpdate) -> Dict[str, str | int]:
 
 @app.post("/api/path-selection/search")
 def path_selection_search(payload: PathSelectionRequest) -> Dict[str, object]:
-    source_name = normalize_bw_object_lookup(payload.source_name)
-    source_system = normalize_bw_object_lookup(payload.source_system)
-    target_name = normalize_bw_object_lookup(payload.target_name)
-    tran_id = str(payload.tran_id or "").strip()
-    waypoints = [normalize_bw_object_lookup(item) for item in (payload.waypoints or []) if normalize_bw_object_lookup(item)]
+    source_name = normalize_bw_object_lookup(payload.SOURCE)
+    source_system = normalize_bw_object_lookup(payload.SOURCESYS)
+    target_name = normalize_bw_object_lookup(payload.TARGETNAME)
+    tran_id = str(payload.TRANID or "").strip()
+    waypoints = [normalize_bw_object_lookup(item) for item in (payload.WAYPOINTS or []) if normalize_bw_object_lookup(item)]
 
     if tran_id and (source_name or source_system or target_name):
         raise HTTPException(status_code=400, detail="Enter either Source and Target, or Transformation ID")
@@ -6661,6 +8386,16 @@ def path_selection_mapping(payload: PathMappingRequest) -> Dict[str, object]:
     )
 
 
+@app.post("/api/path-selection/text")
+def path_selection_text(payload: PathMappingRequest) -> Dict[str, object]:
+    return build_path_text_payload(payload.segments)
+
+
+@app.post("/api/path-selection/logic")
+def path_selection_logic(payload: PathMappingRequest) -> Dict[str, object]:
+    return build_path_logic_payload(payload.segments)
+
+
 @app.post("/api/import/execute")
 def execute_import(
     table_name: str = Form(...),
@@ -6675,6 +8410,8 @@ def execute_import(
     table_name = table_name.strip()
     if table_name not in ALLOWED_TABLES:
         raise HTTPException(status_code=400, detail="Unsupported table_name")
+
+    ensure_import_target_table_schema(table_name)
 
     try:
         mapping = json.loads(mapping_json)
@@ -6702,6 +8439,7 @@ def execute_import(
     missing_key_cols = [k for k in key_fields if k not in db_columns]
     if missing_key_cols:
         raise HTTPException(status_code=400, detail=f"导入失败：键字段不存在于目标表：{', '.join(missing_key_cols)}")
+    key_indices = [db_columns.index(key_field) for key_field in key_fields]
 
     col_sql = ", ".join(f"`{c}`" for c in db_columns)
     ph_sql = ", ".join(["%s"] * len(db_columns))
@@ -6710,13 +8448,20 @@ def execute_import(
     mutable_fields = [c for c in db_columns if c not in key_fields]
     mutable_update_fields = [c for c in mutable_fields if c in explicitly_mapped_fields]
     if mutable_update_fields:
-        set_sql = ", ".join(f"`{c}` = %s" for c in mutable_update_fields)
         upsert_set_sql = ", ".join(f"`{c}` = VALUES(`{c}`)" for c in mutable_update_fields)
     else:
         # Fallback for key-only tables: perform a no-op update expression.
         first_key = key_fields[0]
         upsert_set_sql = f"`{first_key}` = `{first_key}`"
-    upsert_sql = f"{insert_sql} ON DUPLICATE KEY UPDATE {upsert_set_sql}"
+    if IS_SQLITE:
+        conflict_target = ", ".join(f"`{c}`" for c in key_fields)
+        if mutable_update_fields:
+            sqlite_update_sql = ", ".join(f"`{c}` = excluded.`{c}`" for c in mutable_update_fields)
+            upsert_sql = f"{insert_sql} ON CONFLICT ({conflict_target}) DO UPDATE SET {sqlite_update_sql}"
+        else:
+            upsert_sql = f"{insert_sql} ON CONFLICT ({conflict_target}) DO NOTHING"
+    else:
+        upsert_sql = f"{insert_sql} ON DUPLICATE KEY UPDATE {upsert_set_sql}"
     inserted_count = 0
     updated_count = 0
     db_count = 0
@@ -6748,9 +8493,13 @@ def execute_import(
             current_schema_rows = get_table_schema(table_name)
             current_schema_map = {str(item.get("name") or "").strip(): item for item in current_schema_rows}
 
+        column_meta_sequence = [current_schema_map.get(col, {}) for col in db_columns]
         rows = [
-            tuple(normalize_import_param(row[col], current_schema_map.get(col, {}), table_name=table_name) for col in db_columns)
-            for _, row in mapped_df.iterrows()
+            tuple(
+                normalize_import_param(value, column_meta_sequence[index], table_name=table_name)
+                for index, value in enumerate(row_values)
+            )
+            for row_values in mapped_df.loc[:, db_columns].itertuples(index=False, name=None)
         ]
 
         if rows and table_name not in RAW_IMPORT_TABLES:
@@ -6768,8 +8517,7 @@ def execute_import(
                 write_batch_size = DD03L_FAST_WRITE_BATCH_SIZE
             else:
                 write_batch_size = 2000 if fast_upsert_mode else 500
-            row_dicts = [dict(zip(db_columns, row)) for row in rows_batch]
-            key_tuples = [tuple(row_dict[k] for k in key_fields) for row_dict in row_dicts]
+            key_tuples = [tuple(row[index] for index in key_indices) for row in rows_batch]
             distinct_key_count = len(set(key_tuples))
 
             if fast_upsert_mode:
@@ -6880,6 +8628,8 @@ def execute_import(
 
             try:
                 chunk_inserted, chunk_updated, db_count, chunk_affected = execute_import_write(rows)
+            except sqlite3.Error as exc:
+                raise HTTPException(status_code=400, detail=f"导入失败，已回滚到导入前数据。SQLite 返回：{exc}") from exc
             except mysql.connector.Error as exc:
                 if exc.errno == 1406:
                     exc_text = str(exc.msg or exc)
@@ -6933,8 +8683,8 @@ def execute_import(
 @app.post("/api/import/clear-table")
 def clear_import_table(table_name: str = Form(...)) -> Dict[str, str | int]:
     table_name = str(table_name or "").strip()
-    if table_name not in {"rstran", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt"}:
-        raise HTTPException(status_code=400, detail="Only rstran, rstranrule, rstranfield, rstranstepcnst, rstransteprout, rsoadso, rsoadsot, rsds, rsdst, rsdssegfd, rsdssegfdt, rsksnew, rsksnewt, rsksfieldnew, rsksfieldnewt, dd03l, dd02t, dd03t, dd04t, rsdiobj and rsdiobjt support clear-table in current workflow")
+    if table_name not in {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt"}:
+        raise HTTPException(status_code=400, detail="Only rstran, rstrant, rstranrule, rstranfield, rstranstepcnst, rstransteprout, rsoadso, rsoadsot, rsds, rsdst, rsdssegfd, rsdssegfdt, rsksnew, rsksnewt, rsksfieldnew, rsksfieldnewt, dd03l, dd02t, dd03t, dd04t, rsdiobj and rsdiobjt support clear-table in current workflow")
 
     conn = get_conn()
     cur = conn.cursor()

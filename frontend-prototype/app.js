@@ -1,6 +1,6 @@
 (() => {
   const appTitle = String(window.__DATAFLOW_APP_TITLE__ || "转换映射查询").trim() || "转换映射查询";
-  const appVersion = String(window.__DATAFLOW_APP_VERSION__ || "1.0").trim() || "1.0";
+  const appVersion = String(window.__DATAFLOW_APP_VERSION__ || "2.0.0").trim() || "2.0.0";
   const appVersionBadge = document.getElementById("appVersionBadge");
   const appTitleText = document.getElementById("appTitleText");
   const loginTitleText = document.getElementById("loginTitleText");
@@ -192,9 +192,10 @@
   const rebuildRstranMappingRuleBtnTitle = document.getElementById("rebuildRstranMappingRuleBtnTitle");
   const rebuildRstranMappingRuleFullBtn = document.getElementById("rebuildRstranMappingRuleFullBtn");
   const rebuildRstranMappingRuleFullBtnTitle = document.getElementById("rebuildRstranMappingRuleFullBtnTitle");
-  const clearableImportTables = ["rstran", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt"];
+  const clearableImportTables = ["rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt"];
   const importStatusElements = {
     rstran: { time: document.getElementById("importRstranTime"), count: document.getElementById("importRstranCount") },
+    rstrant: { time: document.getElementById("importRstrantTime"), count: document.getElementById("importRstrantCount") },
     rstranrule: { time: document.getElementById("importRstranruleTime"), count: document.getElementById("importRstranruleCount") },
     rstranfield: { time: document.getElementById("importRstranfieldTime"), count: document.getElementById("importRstranfieldCount") },
     rstranstepcnst: { time: document.getElementById("importRstranstepcnstTime"), count: document.getElementById("importRstranstepcnstCount") },
@@ -422,11 +423,39 @@
     }
   }
 
+  function isLoopbackHostName(hostName) {
+    const normalized = String(hostName || "").trim().toLowerCase();
+    return normalized === "localhost" || normalized === "127.0.0.1";
+  }
+
+  function shouldIgnoreRuntimeApiBaseForLocalPage(runtimeBase) {
+    const runtimeValue = String(runtimeBase || "").trim();
+    if (!runtimeValue) return false;
+
+    const pageHost = String(window.location.hostname || "").trim().toLowerCase();
+    const pageProtocol = String(window.location.protocol || "").trim().toLowerCase();
+    const isLocalPage = pageProtocol === "file:" || isLoopbackHostName(pageHost);
+    if (!isLocalPage) return false;
+
+    try {
+      const normalizedRuntime = runtimeValue.replace(/^file:\/\//i, "http://");
+      const runtimeUrl = new URL(normalizedRuntime);
+      return !isLoopbackHostName(runtimeUrl.hostname);
+    } catch {
+      return false;
+    }
+  }
+
   function resolveApiBase() {
     const fromRuntime = String(window.__DATAFLOW_API_BASE__ || "").trim();
     const fromQuery = String(new URLSearchParams(window.location.search).get("apiBase") || "").trim();
     const pageProtocol = window.location.protocol === "file:" ? "http:" : window.location.protocol;
-    const pageDefault = `${pageProtocol}//${window.location.hostname || "localhost"}:8000`;
+    const pageOrigin = String(window.location.origin || "").trim();
+    const pageDefault = window.location.protocol === "file:"
+      ? `${pageProtocol}//${window.location.hostname || "localhost"}:8000`
+      : (pageOrigin && pageOrigin !== "null"
+        ? pageOrigin
+        : `${pageProtocol}//${window.location.hostname || "localhost"}:8000`);
     if (!fromRuntime && !fromQuery) {
       try {
         window.localStorage.removeItem("df-api-base");
@@ -434,7 +463,9 @@
         // Ignore storage failures in restrictive browser contexts.
       }
     }
-    const host = fromRuntime || fromQuery || pageDefault;
+
+    const runtimeCandidate = shouldIgnoreRuntimeApiBaseForLocalPage(fromRuntime) ? "" : fromRuntime;
+    const host = runtimeCandidate || fromQuery || pageDefault;
     return `${normalizeLoopbackApiHost(host)}/api`;
   }
 
@@ -486,6 +517,9 @@
   const MAPPING_SOURCE_FIELD_MIN_WIDTH = 96;
   const MAPPING_TARGET_FIELD_MIN_WIDTH = 82;
   const MAPPING_FIELD_TEXT_MIN_WIDTH = 140;
+  const MAPPING_FIELD_INFO_TYPE_MIN_WIDTH = 92;
+  const MAPPING_FIELD_INFO_LENGTH_MIN_WIDTH = 76;
+  const MAPPING_FIELD_INFO_DECIMALS_MIN_WIDTH = 82;
   let isPathSelectionCollapsed = false;
   let autoCollapsePathSelection = true;
   let dataQueryTables = [];
@@ -543,7 +577,9 @@
   let pathRuleColumnVisible = true;
   let pathHideNonKeyByStep = {};
   let pathFieldTextVisibleState = { source: false, stepTargets: {} };
+  let pathFieldInfoVisible = false;
   let activePathMappingFeatures = { logic: false, text: false };
+  let activePathFeatureLoad = null;
   let activeAgGridApi = null;
   let activeAlignedRowsForView = [];
   let activeAgGridColumnState = [];
@@ -590,29 +626,31 @@
     return Object.values(pathFieldTextVisibleState?.stepTargets || {}).some(Boolean);
   }
 
+  function isFieldInfoVisible() {
+    return Boolean(pathFieldInfoVisible);
+  }
+
+  function setFieldInfoVisible(isVisible) {
+    pathFieldInfoVisible = Boolean(isVisible);
+  }
+
   function getPathMappingFeaturesFromPayload(mappingResult) {
     return {
-      logic: Boolean(mappingResult?.include_logic),
-      text: Boolean(mappingResult?.include_text)
+      logic: Boolean(mappingResult?.INCLUDE_LOGIC),
+      text: Boolean(mappingResult?.INCLUDE_TEXT)
     };
   }
 
   function buildPathMappingRequestSegments(rawSegments) {
-    return (Array.isArray(rawSegments) ? rawSegments : []).map((segment) => ({
-      source: String(segment?.source || "").trim(),
-      target: String(segment?.target || "").trim(),
-      source_type: String(segment?.source_type || "").trim(),
-      target_type: String(segment?.target_type || "").trim(),
-      tran_ids: Array.isArray(segment?.tran_ids) ? segment.tran_ids : []
-    }));
+    return serializePathSegmentsForApi(rawSegments);
   }
 
   function getActivePathMappingRequestSegments() {
     const appliedPath = getAppliedPathCandidate();
-    if (appliedPath?.segments) {
-      return buildPathMappingRequestSegments(appliedPath.segments);
+    if (getPathSegments(appliedPath).length) {
+      return buildPathMappingRequestSegments(getPathSegments(appliedPath));
     }
-    return buildPathMappingRequestSegments(activePathMappingResult?.segments);
+    return buildPathMappingRequestSegments(getPathSegments(activePathMappingResult));
   }
 
   function setFieldTextToggleVisible(toggleScope, isVisible) {
@@ -1174,7 +1212,11 @@
   ];
   const PATH_EXPORT_TEMPLATE_URL = "./Assets/Download%20template.xlsx";
   const PATH_EXPORT_TEMPLATE_SHEET = "Aligned Mapping";
-  const PATH_EXPORT_BLOCK_WIDTH = 11;
+  const PATH_EXPORT_BLOCK_WIDTH = 17;
+  const PATH_EXPORT_TEMPLATE_URL_CANDIDATES = [
+    "./Assets/Download%20template.xlsx",
+    "./Assets/Download template.xlsx"
+  ];
   const PATH_EXPORT_DEFAULT_STEP_TITLE_ROW = 1;
   const PATH_EXPORT_DEFAULT_TRANSFORMATION_ROW = 2;
   const PATH_EXPORT_DEFAULT_ROUTINE_START_ROW = 8;
@@ -1205,6 +1247,14 @@
     } catch {
       // Ignore storage failures in restrictive browser contexts.
     }
+  }
+
+  function canUseSavePicker() {
+    const platform = String(window.navigator?.platform || "").toLowerCase();
+    if (platform.includes("win")) {
+      return false;
+    }
+    return typeof window.showSaveFilePicker === "function" && !isSavePickerDisabled();
   }
 
   function escAttr(str) {
@@ -1273,23 +1323,23 @@
   }
 
   function getLogicEntryContentRaw(entry) {
-    return String(entry?.content_raw || "");
+    return String(entry?.CONTENT_RAW || entry?.content_raw || "");
   }
 
   function getLogicEntryContentDisplay(entry) {
-    return String(entry?.content_display ?? entry?.content_raw ?? "");
+    return String(entry?.CONTENT_DISPLAY ?? entry?.content_display ?? entry?.CONTENT_RAW ?? entry?.content_raw ?? "");
   }
 
   function getLogicEntryLanguage(entry) {
-    const normalized = String(entry?.language || "plaintext").trim().toLowerCase();
+    const normalized = String(entry?.LANGUAGE || entry?.language || "plaintext").trim().toLowerCase();
     return normalized || "plaintext";
   }
 
   function getLogicEntryDisplayTitle(entry) {
-    const title = String(entry?.title || "").trim();
-    const kindLabel = formatLogicKindLabel(entry?.kind);
+    const title = String(entry?.TITLE || entry?.title || "").trim();
+    const kindLabel = formatLogicKindLabel(entry?.KIND || entry?.kind);
     if (!title) return kindLabel;
-    if (title.toUpperCase() === normalizeLogicKind(entry?.kind)) return kindLabel;
+    if (title.toUpperCase() === normalizeLogicKind(entry?.KIND || entry?.kind)) return kindLabel;
     if (title === kindLabel) return kindLabel;
     return title;
   }
@@ -1304,11 +1354,11 @@
 
   function getLogicEntrySummary(entry) {
     const parts = [
-      entry?.tran_id ? `TRANID: ${entry.tran_id}` : "",
-      Number(entry?.rule_id || 0) ? `RULEID: ${entry.rule_id}` : "",
-      Number(entry?.step_id || 0) ? `STEPID: ${entry.step_id}` : "",
-      entry?.on_hana ? `ON_HANA: ${entry.on_hana}` : "",
-      entry?.source_table ? String(entry.source_table).trim().toUpperCase() : ""
+      entry?.TRANID ? `TRANID: ${entry.TRANID}` : "",
+      Number(entry?.RULEID || 0) ? `RULEID: ${entry.RULEID}` : "",
+      Number(entry?.STEPID || 0) ? `STEPID: ${entry.STEPID}` : "",
+      entry?.ON_HANA ? `ON_HANA: ${entry.ON_HANA}` : "",
+      entry?.SOURCE_TABLE ? String(entry.SOURCE_TABLE).trim().toUpperCase() : ""
     ].filter(Boolean);
     return parts.join(" | ");
   }
@@ -1372,7 +1422,7 @@
     const viewportWidth = Math.max(640, window.innerWidth - 24);
     const viewportHeight = Math.max(420, window.innerHeight - 24);
     const normalizedEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
-    const navWidth = normalizedEntries.length > 1 ? 84 : 76;
+    const navWidth = normalizedEntries.length > 1 ? 72 : 64;
     const shellWidth = clampNumber(820, 700, viewportWidth);
     const shellHeight = clampNumber(470, 420, viewportHeight);
 
@@ -1444,12 +1494,10 @@
   }
 
   function renderStepLogicTrigger(segment) {
-    const entryCount = Number(segment?.step_logic_entry_count || 0);
-    const hasTranIds = Array.isArray(segment?.tran_ids) && segment.tran_ids.some((item) => String(item || "").trim());
-    const canTryLazyLoad = !activePathMappingFeatures.logic && hasTranIds;
-    const hasRoutine = entryCount > 0 || canTryLazyLoad;
+    const entryCount = Number(segment?.STEP_LOGIC_ENTRY_COUNT || 0);
+    const hasRoutine = entryCount > 0;
     const attrs = hasRoutine
-      ? { "data-step-logic-open": String(segment?.index || "") }
+      ? { "data-step-logic-open": String(segment?.INDEX || "") }
       : { disabled: "disabled", "aria-disabled": "true" };
     const extraClass = hasRoutine
       ? "mapping-logic-action-btn-step is-routine-available"
@@ -1459,21 +1507,21 @@
   }
 
   function findSegmentByDisplayIndex(segmentDisplayIndex) {
-    const normalizedSegments = Array.isArray(activePathMappingResult?.segments) ? activePathMappingResult.segments : [];
-    return normalizedSegments.find((segment, index) => String(segment?.index || index + 1) === String(segmentDisplayIndex || "").trim()) || null;
+    const normalizedSegments = getPathSegments(activePathMappingResult);
+    return normalizedSegments.find((segment, index) => String(segment?.INDEX || index + 1) === String(segmentDisplayIndex || "").trim()) || null;
   }
 
   function getRuleLogicEntriesForSegment(segmentIndex, tranId, ruleId, stepId) {
-    const segments = Array.isArray(activePathMappingResult?.segments) ? activePathMappingResult.segments : [];
+    const segments = getPathSegments(activePathMappingResult);
     const segment = segments[segmentIndex] || null;
     if (!segment) return [];
-    const rows = Array.isArray(segment.rows) ? segment.rows : [];
+    const rows = getPathRows(segment);
     const matchedRow = rows.find((row) => (
-      String(row?.tran_id || "").trim() === String(tranId || "").trim() &&
-      Number(row?.rule_id || 0) === Number(ruleId || 0) &&
-      Number(row?.step_id || 0) === Number(stepId || 0)
+      String(getPathRowValue(row, "TRANID") || "").trim() === String(tranId || "").trim() &&
+      Number(getPathRowValue(row, "RULEID") || 0) === Number(ruleId || 0) &&
+      Number(getPathRowValue(row, "STEPID") || 0) === Number(stepId || 0)
     ));
-    return Array.isArray(matchedRow?.logic_entries) ? matchedRow.logic_entries : [];
+    return getPathRowLogicEntries(matchedRow);
   }
 
   function renderLogicViewer() {
@@ -1566,8 +1614,8 @@
       return;
     }
     let lazyLogicLoaded = false;
-    let stepLogicGroups = Array.isArray(segment.step_logic) ? segment.step_logic : [];
-    let entries = stepLogicGroups.flatMap((group) => Array.isArray(group?.entries) ? group.entries : []);
+    let stepLogicGroups = getPathStepLogicGroups(segment);
+    let entries = stepLogicGroups.flatMap((group) => Array.isArray(group?.ENTRIES) ? group.ENTRIES : []);
     if (!entries.length && activePathMappingResult && !activePathMappingFeatures.logic) {
       try {
         await ensurePathMappingFeatures({ logic: true }, "正在加载 Step 程序详情...");
@@ -1577,26 +1625,23 @@
         showToast(`加载 Step 程序失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
         return;
       }
-      if (lazyLogicLoaded && activePathMappingResult) {
-        renderAlignedPathMapping(activePathMappingResult);
-      }
       const refreshedSegment = findSegmentByDisplayIndex(segmentDisplayIndex);
-      stepLogicGroups = Array.isArray(refreshedSegment?.step_logic) ? refreshedSegment.step_logic : [];
-      entries = stepLogicGroups.flatMap((group) => Array.isArray(group?.entries) ? group.entries : []);
+      stepLogicGroups = getPathStepLogicGroups(refreshedSegment);
+      entries = stepLogicGroups.flatMap((group) => Array.isArray(group?.ENTRIES) ? group.ENTRIES : []);
     }
     if (!entries.length) {
       showToast("当前 Step 没有转换级程序。", "error");
       return;
     }
     await openLogicViewer(entries, {
-      title: `Step ${segment.index || segmentDisplayIndex} 转换级程序`,
-      meta: `${segment.source || "--"} -> ${segment.target || "--"} | TRANID: ${(Array.isArray(segment.tran_ids) ? segment.tran_ids.join(", ") : "--") || "--"}`
+      title: `Step ${segment.INDEX || segmentDisplayIndex} 转换级程序`,
+      meta: `${segment.SOURCE || "--"} -> ${segment.TARGETNAME || "--"} | TRANID: ${(getPathSegmentTranIds(segment).join(", ") || "--")}`
     });
   }
 
   async function openRuleLogicViewer(segmentIndex, tranId, ruleId, stepId) {
-    const segments = Array.isArray(activePathMappingResult?.segments) ? activePathMappingResult.segments : [];
-    const segment = segments[segmentIndex] || null;
+    let segments = getPathSegments(activePathMappingResult);
+    let segment = segments[segmentIndex] || null;
     if (!segment) {
       showToast("未找到当前规则的内容。", "error");
       return;
@@ -1612,25 +1657,24 @@
         showToast(`加载规则逻辑失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
         return;
       }
-      if (lazyLogicLoaded && activePathMappingResult) {
-        renderAlignedPathMapping(activePathMappingResult);
-      }
+      segments = getPathSegments(activePathMappingResult);
+      segment = segments[segmentIndex] || null;
       entries = getRuleLogicEntriesForSegment(segmentIndex, tranId, ruleId, stepId);
     }
     if (!entries.length) {
       showToast("当前规则没有公式、程序或常量内容。", "error");
       return;
     }
-    const rows = Array.isArray(segment.rows) ? segment.rows : [];
+    const rows = getPathRows(segment);
     const matchedRow = rows.find((row) => (
-      String(row?.tran_id || "").trim() === String(tranId || "").trim() &&
-      Number(row?.rule_id || 0) === Number(ruleId || 0) &&
-      Number(row?.step_id || 0) === Number(stepId || 0)
+      String(getPathRowValue(row, "TRANID") || "").trim() === String(tranId || "").trim() &&
+      Number(getPathRowValue(row, "RULEID") || 0) === Number(ruleId || 0) &&
+      Number(getPathRowValue(row, "STEPID") || 0) === Number(stepId || 0)
     ));
-    const fieldLabel = [String(matchedRow?.source_field || "").trim(), String(matchedRow?.target_field || "").trim()].filter(Boolean).join(" -> ");
+    const fieldLabel = [String(getPathRowValue(matchedRow, "SOURCE_FIELD") || "").trim(), String(getPathRowValue(matchedRow, "TARGET_FIELD") || "").trim()].filter(Boolean).join(" -> ");
     await openLogicViewer(entries, {
-      title: `Step ${segment.index || segmentIndex + 1} | Rule ${ruleId}${fieldLabel ? ` | ${fieldLabel}` : ""}`,
-      meta: `${segment.source || "--"} -> ${segment.target || "--"} | ${fieldLabel || "无字段映射标签"}`
+      title: `Step ${segment.INDEX || segmentIndex + 1} | Rule ${ruleId}${fieldLabel ? ` | ${fieldLabel}` : ""}`,
+      meta: `${segment.SOURCE || "--"} -> ${segment.TARGETNAME || "--"} | ${fieldLabel || "无字段映射标签"}`
     });
   }
 
@@ -3224,7 +3268,7 @@
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 
-    const hasSavePicker = typeof window.showSaveFilePicker === "function" && !isSavePickerDisabled();
+    const hasSavePicker = canUseSavePicker();
     let shouldFallbackToAnchorDownload = !hasSavePicker;
     if (hasSavePicker) {
       try {
@@ -4234,22 +4278,280 @@
     return String(value || "").trim().toUpperCase();
   }
 
+  function getPathSummaryValue(summary, fieldName, fallback = "") {
+    const primary = summary?.[fieldName];
+    if (primary != null && String(primary).trim() !== "") {
+      return String(primary).trim();
+    }
+    return String(fallback || "").trim();
+  }
+
+  function getPathSegmentValue(segment, fieldName, fallback = "") {
+    const primary = segment?.[fieldName];
+    if (primary != null && String(primary).trim() !== "") {
+      return String(primary).trim();
+    }
+    return String(fallback || "").trim();
+  }
+
+  function getPathSegmentTranIds(segment) {
+    const values = Array.isArray(segment?.TRANIDS) ? segment.TRANIDS : [];
+    return values.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+
+  function getPathSegmentTrNames(segment) {
+    const values = Array.isArray(segment?.TR_NAMES) ? segment.TR_NAMES : (Array.isArray(segment?.tr_names) ? segment.tr_names : []);
+    return values.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+
+  function getPathCandidatePaths(result) {
+    return Array.isArray(result?.CANDIDATE_PATHS) ? result.CANDIDATE_PATHS : [];
+  }
+
+  function getPathSegments(payload) {
+    return Array.isArray(payload?.SEGMENTS) ? payload.SEGMENTS : [];
+  }
+
+  function getPathRows(segment) {
+    return Array.isArray(segment?.ROWS) ? segment.ROWS : [];
+  }
+
+  function getPathNodeSequence(path) {
+    return Array.isArray(path?.NODE_SEQUENCE) ? path.NODE_SEQUENCE : [];
+  }
+
+  function getPathStepLogicGroups(segment) {
+    return Array.isArray(segment?.STEP_LOGIC) ? segment.STEP_LOGIC : [];
+  }
+
+  function getPathRowValue(row, fieldName, fallback = "") {
+    const value = row?.[fieldName];
+    if (value != null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+    return String(fallback || "").trim();
+  }
+
+  function getPathRowLogicEntries(row) {
+    return Array.isArray(row?.LOGIC_ENTRIES) ? row.LOGIC_ENTRIES : [];
+  }
+
+  function getPathRowHasLogicEntry(row) {
+    return Boolean(row?.HAS_LOGIC_ENTRY);
+  }
+
+  function getPathDiagnosticsBucket(segment, bucketName) {
+    const diag = segment?.DIAGNOSTICS?.[bucketName] || {};
+    return {
+      object: String(diag?.OBJECT || diag?.object || "").trim(),
+      object_display_name: String(diag?.OBJECT_DISPLAY_NAME || diag?.object_display_name || "").trim(),
+      object_type: String(diag?.OBJECT_TYPE || diag?.object_type || "").trim(),
+      object_system: String(diag?.OBJECT_SYSTEM || diag?.object_system || "").trim(),
+      field_key: String(diag?.FIELD_KEY || diag?.field_key || "").trim(),
+      unique_field_count: Number(diag?.UNIQUE_FIELD_COUNT || diag?.unique_field_count || 0),
+      comparison_available: Boolean(diag?.COMPARISON_AVAILABLE ?? diag?.comparison_available),
+      inventory_field_count: diag?.INVENTORY_FIELD_COUNT ?? diag?.inventory_field_count ?? null,
+      difference_count: diag?.DIFFERENCE_COUNT ?? diag?.difference_count ?? null,
+      missing_count: diag?.MISSING_COUNT ?? diag?.missing_count ?? null,
+      extra_count: diag?.EXTRA_COUNT ?? diag?.extra_count ?? null,
+      has_difference: Boolean(diag?.HAS_DIFFERENCE ?? diag?.has_difference),
+      inventory_origin: String(diag?.INVENTORY_ORIGIN || diag?.inventory_origin || "").trim(),
+      inventory_label: String(diag?.INVENTORY_LABEL || diag?.inventory_label || "").trim(),
+      adso_table_suffix: String(diag?.ADSO_TABLE_SUFFIX || diag?.adso_table_suffix || "").trim(),
+      adso_table_name: String(diag?.ADSO_TABLE_NAME || diag?.adso_table_name || "").trim()
+    };
+  }
+
+  function normalizePathLogicEntry(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    return {
+      TRANID: String(entry?.TRANID || entry?.tran_id || "").trim(),
+      RULEID: Number(entry?.RULEID || entry?.rule_id || 0),
+      STEPID: Number(entry?.STEPID || entry?.step_id || 0),
+      KIND: String(entry?.KIND || entry?.kind || "").trim(),
+      TITLE: String(entry?.TITLE || entry?.title || "").trim(),
+      CONTENT_RAW: String(entry?.CONTENT_RAW || entry?.content_raw || ""),
+      CONTENT_DISPLAY: String(entry?.CONTENT_DISPLAY || entry?.content_display || ""),
+      LANGUAGE: String(entry?.LANGUAGE || entry?.language || "").trim(),
+      ON_HANA: String(entry?.ON_HANA || entry?.on_hana || "").trim(),
+      CODE_ID: String(entry?.CODE_ID || entry?.code_id || "").trim(),
+      SOURCE_TABLE: String(entry?.SOURCE_TABLE || entry?.source_table || "").trim(),
+      IS_CONSTANT: Boolean(entry?.IS_CONSTANT ?? entry?.is_constant)
+    };
+  }
+
+  function normalizePathStepLogicGroup(group) {
+    if (!group || typeof group !== "object") return null;
+    return {
+      TRANID: String(group?.TRANID || group?.tran_id || "").trim(),
+      ENTRY_COUNT: Number(group?.ENTRY_COUNT || group?.entry_count || 0),
+      ENTRIES: (Array.isArray(group?.ENTRIES) ? group.ENTRIES : (Array.isArray(group?.entries) ? group.entries : []))
+        .map(normalizePathLogicEntry)
+        .filter(Boolean)
+    };
+  }
+
+  function normalizePathMappingRow(row) {
+    if (!row || typeof row !== "object") return null;
+    return {
+      TRANID: String(row?.TRANID || row?.tran_id || "").trim(),
+      RULEID: Number(row?.RULEID || row?.rule_id || 0),
+      STEPID: Number(row?.STEPID || row?.step_id || 0),
+      SEGID: String(row?.SEGID || row?.seg_id || "").trim(),
+      PAIR_INDEX: Number(row?.PAIR_INDEX || row?.pair_index || 0),
+      RULEPOSIT: String(row?.RULEPOSIT || row?.ruleposit || "").trim(),
+      SOURCE_FIELD: String(row?.SOURCE_FIELD || row?.source_field || "").trim(),
+      TARGET_FIELD: String(row?.TARGET_FIELD || row?.target_field || "").trim(),
+      SOURCE_FIELDTYPE: String(row?.SOURCE_FIELDTYPE || row?.source_fieldtype || "").trim(),
+      TARGET_FIELDTYPE: String(row?.TARGET_FIELDTYPE || row?.target_fieldtype || "").trim(),
+      SOURCE_TEXT: String(row?.SOURCE_TEXT || row?.source_text || "").trim(),
+      TARGET_TEXT: String(row?.TARGET_TEXT || row?.target_text || "").trim(),
+      SOURCE_DATATYPE: String(row?.SOURCE_DATATYPE || row?.source_datatype || "").trim(),
+      SOURCE_LENGTH: row?.SOURCE_LENGTH ?? row?.source_length ?? null,
+      SOURCE_DECIMALS: row?.SOURCE_DECIMALS ?? row?.source_decimals ?? null,
+      TARGET_DATATYPE: String(row?.TARGET_DATATYPE || row?.target_datatype || "").trim(),
+      TARGET_LENGTH: row?.TARGET_LENGTH ?? row?.target_length ?? null,
+      TARGET_DECIMALS: row?.TARGET_DECIMALS ?? row?.target_decimals ?? null,
+      SOURCE_KEY: String(row?.SOURCE_KEY || row?.source_key || "").trim(),
+      TARGET_KEY: String(row?.TARGET_KEY || row?.target_key || row?.target_keyflag || "").trim(),
+      SOURCE_FIELD_ORIGIN: String(row?.SOURCE_FIELD_ORIGIN || row?.source_field_origin || "").trim(),
+      TARGET_FIELD_ORIGIN: String(row?.TARGET_FIELD_ORIGIN || row?.target_field_origin || "").trim(),
+      SOURCE_FIELD_MATCHED: Number(row?.SOURCE_FIELD_MATCHED || row?.source_field_matched || 0),
+      TARGET_FIELD_MATCHED: Number(row?.TARGET_FIELD_MATCHED || row?.target_field_matched || 0),
+      RULE: String(row?.RULE || row?.rule || row?.rule_type || "").trim(),
+      AGGR: String(row?.AGGR || row?.aggr || "").trim(),
+      ROW_KIND: String(row?.ROW_KIND || row?.row_kind || "").trim(),
+      LOGIC_ENTRIES: (Array.isArray(row?.LOGIC_ENTRIES) ? row.LOGIC_ENTRIES : (Array.isArray(row?.logic_entries) ? row.logic_entries : []))
+        .map(normalizePathLogicEntry)
+        .filter(Boolean),
+      HAS_LOGIC_ENTRY: Boolean(row?.HAS_LOGIC_ENTRY ?? row?.has_logic_entry)
+    };
+  }
+
+  function normalizePathSegment(segment, index = 0) {
+    if (!segment || typeof segment !== "object") return null;
+    return {
+      id: String(segment?.id || `segment-${index + 1}`),
+      INDEX: Number(segment?.INDEX || segment?.index || index + 1),
+      SEGMENT_COUNT: Number(segment?.SEGMENT_COUNT || segment?.segment_count || 0),
+      SOURCE: String(segment?.SOURCE || segment?.source || "").trim(),
+      TARGETNAME: String(segment?.TARGETNAME || segment?.target || "").trim(),
+      SOURCETYPE: String(segment?.SOURCETYPE || segment?.source_type || "").trim(),
+      TARGETTYPE: String(segment?.TARGETTYPE || segment?.target_type || "").trim(),
+      SOURCESYS: String(segment?.SOURCESYS || segment?.source_system || "").trim(),
+      TARGETSYSTEM: String(segment?.TARGETSYSTEM || segment?.target_system || "").trim(),
+      SOURCE_DISPLAY_NAME: String(segment?.SOURCE_DISPLAY_NAME || segment?.source_display_name || "").trim(),
+      TARGET_DISPLAY_NAME: String(segment?.TARGET_DISPLAY_NAME || segment?.target_display_name || "").trim(),
+      SOURCE_OBJECT_NAME: String(segment?.SOURCE_OBJECT_NAME || segment?.source_object_name || "").trim(),
+      TARGET_OBJECT_NAME: String(segment?.TARGET_OBJECT_NAME || segment?.target_object_name || "").trim(),
+      TRANIDS: getPathSegmentTranIds(segment),
+      TR_NAMES: getPathSegmentTrNames(segment),
+      LOGIC_IDS: Array.isArray(segment?.LOGIC_IDS) ? segment.LOGIC_IDS.map((item) => String(item || "").trim()).filter(Boolean) : [],
+      HAS_LOGIC: Boolean(segment?.HAS_LOGIC ?? segment?.has_logic),
+      ROWS: (Array.isArray(segment?.ROWS) ? segment.ROWS : (Array.isArray(segment?.rows) ? segment.rows : []))
+        .map(normalizePathMappingRow)
+        .filter(Boolean),
+      STEP_LOGIC: (Array.isArray(segment?.STEP_LOGIC) ? segment.STEP_LOGIC : (Array.isArray(segment?.step_logic) ? segment.step_logic : []))
+        .map(normalizePathStepLogicGroup)
+        .filter(Boolean),
+      STEP_LOGIC_ENTRY_COUNT: Number(segment?.STEP_LOGIC_ENTRY_COUNT || segment?.step_logic_entry_count || 0),
+      NODE_SEQUENCE: (Array.isArray(segment?.NODE_SEQUENCE) ? segment.NODE_SEQUENCE : (Array.isArray(segment?.node_sequence) ? segment.node_sequence : []))
+        .map((node) => ({
+          id: String(node?.id || "").trim(),
+          OBJECT_NAME: String(node?.OBJECT_NAME || node?.object_name || "").trim(),
+          TYPE: String(node?.TYPE || node?.type || "").trim(),
+          SOURCESYS: String(node?.SOURCESYS || "").trim()
+        })),
+      WAYPOINTS_HIT: (Array.isArray(segment?.WAYPOINTS_HIT) ? segment.WAYPOINTS_HIT : (Array.isArray(segment?.waypoints_hit) ? segment.waypoints_hit : []))
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+      DIAGNOSTICS: {
+        SOURCE: segment?.DIAGNOSTICS?.SOURCE || segment?.diagnostics?.source || {},
+        TARGET: segment?.DIAGNOSTICS?.TARGET || segment?.diagnostics?.target || {}
+      }
+    };
+  }
+
+  function normalizePathSearchResult(payload) {
+    const candidatePaths = (Array.isArray(payload?.CANDIDATE_PATHS) ? payload.CANDIDATE_PATHS : (Array.isArray(payload?.candidate_paths) ? payload.candidate_paths : []))
+      .map((path, index) => ({
+        id: String(path?.id || `path-${index + 1}`),
+        index: Number(path?.index || index + 1),
+        SEGMENT_COUNT: Number(path?.SEGMENT_COUNT || path?.segment_count || 0),
+        NODE_SEQUENCE: (Array.isArray(path?.NODE_SEQUENCE) ? path.NODE_SEQUENCE : (Array.isArray(path?.node_sequence) ? path.node_sequence : []))
+          .map((node) => ({
+            id: String(node?.id || "").trim(),
+            OBJECT_NAME: String(node?.OBJECT_NAME || node?.object_name || "").trim(),
+            TYPE: String(node?.TYPE || node?.type || "").trim(),
+            SOURCESYS: String(node?.SOURCESYS || "").trim()
+          })),
+        WAYPOINTS_HIT: (Array.isArray(path?.WAYPOINTS_HIT) ? path.WAYPOINTS_HIT : (Array.isArray(path?.waypoints_hit) ? path.waypoints_hit : []))
+          .map((item) => String(item || "").trim())
+          .filter(Boolean),
+        SEGMENTS: (Array.isArray(path?.SEGMENTS) ? path.SEGMENTS : (Array.isArray(path?.segments) ? path.segments : []))
+          .map((segment, segmentIndex) => normalizePathSegment(segment, segmentIndex))
+          .filter(Boolean)
+      }));
+
+    return {
+      SOURCE: String(payload?.SOURCE || payload?.source_name || "").trim(),
+      SOURCESYS: String(payload?.SOURCESYS || payload?.source_system || "").trim(),
+      TARGETNAME: String(payload?.TARGETNAME || payload?.target_name || "").trim(),
+      WAYPOINTS: (Array.isArray(payload?.WAYPOINTS) ? payload.WAYPOINTS : (Array.isArray(payload?.waypoints) ? payload.waypoints : []))
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+      CANDIDATE_COUNT: Number(payload?.CANDIDATE_COUNT || payload?.candidate_count || candidatePaths.length),
+      RESOLVED_START_NAME: String(payload?.RESOLVED_START_NAME || payload?.resolved_start_name || "").trim(),
+      CANDIDATE_PATHS: candidatePaths,
+      TRUNCATED: Boolean(payload?.TRUNCATED ?? payload?.truncated),
+      SEARCH_STATS: {
+        STATES_VISITED: Number(payload?.SEARCH_STATS?.STATES_VISITED || payload?.search_stats?.states_visited || 0),
+        EDGE_COUNT: Number(payload?.SEARCH_STATS?.EDGE_COUNT || payload?.search_stats?.edge_count || 0),
+        NODE_COUNT: Number(payload?.SEARCH_STATS?.NODE_COUNT || payload?.search_stats?.node_count || 0)
+      }
+    };
+  }
+
+  function normalizePathMappingPayload(payload) {
+    const segments = (Array.isArray(payload?.SEGMENTS) ? payload.SEGMENTS : (Array.isArray(payload?.segments) ? payload.segments : []))
+      .map((segment, index) => normalizePathSegment(segment, index))
+      .filter(Boolean);
+    return {
+      SEGMENT_COUNT: Number(payload?.SEGMENT_COUNT || payload?.segment_count || segments.length),
+      SEGMENTS: segments,
+      INCLUDE_LOGIC: Boolean(payload?.INCLUDE_LOGIC ?? payload?.include_logic),
+      INCLUDE_TEXT: Boolean(payload?.INCLUDE_TEXT ?? payload?.include_text)
+    };
+  }
+
+  function serializePathSegmentsForApi(segments) {
+    return (Array.isArray(segments) ? segments : []).map((segment) => ({
+      SOURCE: getPathSegmentValue(segment, "SOURCE"),
+      TARGETNAME: getPathSegmentValue(segment, "TARGETNAME"),
+      SOURCETYPE: getPathSegmentValue(segment, "SOURCETYPE"),
+      TARGETTYPE: getPathSegmentValue(segment, "TARGETTYPE"),
+      SOURCESYS: getPathSegmentValue(segment, "SOURCESYS"),
+      TARGETSYSTEM: getPathSegmentValue(segment, "TARGETSYSTEM"),
+      TRANIDS: getPathSegmentTranIds(segment)
+    }));
+  }
+
   async function fetchPathSelection(sourceName, sourceSystem, targetName, tranId) {
     const resp = await apiFetch(`${importStatusApiBase}/path-selection/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       timeoutMs: 60000,
       body: JSON.stringify({
-        source_name: sourceName,
-        source_system: sourceSystem,
-        target_name: targetName,
-        tran_id: tranId
+        SOURCE: sourceName,
+        SOURCESYS: sourceSystem,
+        TARGETNAME: targetName,
+        TRANID: tranId
       })
     });
     if (!resp.ok) {
       throw new Error(parseErrorText(await resp.text(), `status ${resp.status}`));
     }
-    return resp.json();
+    return normalizePathSearchResult(await resp.json());
   }
 
   async function fetchPathMapping(segments, options = {}) {
@@ -4261,7 +4563,7 @@
       headers: { "Content-Type": "application/json" },
       timeoutMs,
       body: JSON.stringify({
-        segments,
+        segments: serializePathSegmentsForApi(segments),
         include_logic: includeLogic,
         include_text: includeText
       })
@@ -4269,7 +4571,141 @@
     if (!resp.ok) {
       throw new Error(parseErrorText(await resp.text(), `status ${resp.status}`));
     }
-    return resp.json();
+    return normalizePathMappingPayload(await resp.json());
+  }
+
+  async function fetchPathText(segments) {
+    const resp = await apiFetch(`${importStatusApiBase}/path-selection/text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      timeoutMs: 120000,
+      body: JSON.stringify({
+        segments: serializePathSegmentsForApi(segments),
+        include_logic: false,
+        include_text: true
+      })
+    });
+    if (!resp.ok) {
+      throw new Error(parseErrorText(await resp.text(), `status ${resp.status}`));
+    }
+    return normalizePathMappingPayload(await resp.json());
+  }
+
+  async function fetchPathLogic(segments) {
+    const resp = await apiFetch(`${importStatusApiBase}/path-selection/logic`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      timeoutMs: 120000,
+      body: JSON.stringify({
+        segments: serializePathSegmentsForApi(segments),
+        include_logic: true,
+        include_text: false
+      })
+    });
+    if (!resp.ok) {
+      throw new Error(parseErrorText(await resp.text(), `status ${resp.status}`));
+    }
+    return normalizePathMappingPayload(await resp.json());
+  }
+
+  function buildPathTextRowKey(row) {
+    return [
+      String(getPathRowValue(row, "TRANID") || "").trim(),
+      String(Number(getPathRowValue(row, "RULEID") || 0)),
+      String(Number(getPathRowValue(row, "STEPID") || 0)),
+      String(getPathRowValue(row, "SEGID") || "").trim(),
+      String(Number(getPathRowValue(row, "PAIR_INDEX") || 0)),
+      String(getPathRowValue(row, "SOURCE_FIELD") || "").trim(),
+      String(getPathRowValue(row, "TARGET_FIELD") || "").trim()
+    ].join("||");
+  }
+
+  function mergePathTextPayload(baseResult, textPayload) {
+    const baseSegments = getPathSegments(baseResult);
+    const patchSegments = getPathSegments(textPayload);
+    const patchByIndex = new Map(
+      patchSegments.map((segment, index) => [String(segment?.INDEX || index + 1), segment])
+    );
+
+    const mergedSegments = baseSegments.map((segment, index) => {
+      const patchSegment = patchByIndex.get(String(segment?.INDEX || index + 1));
+      if (!patchSegment) {
+        return segment;
+      }
+
+      const patchRows = getPathRows(patchSegment);
+      const patchMap = new Map(patchRows.map((row) => [buildPathTextRowKey(row), row]));
+      const mergedRows = getPathRows(segment).map((row) => {
+        const patchRow = patchMap.get(buildPathTextRowKey(row));
+        if (!patchRow) {
+          return row;
+        }
+        return {
+          ...row,
+          SOURCE_TEXT: String(getPathRowValue(patchRow, "SOURCE_TEXT") || "").trim(),
+          TARGET_TEXT: String(getPathRowValue(patchRow, "TARGET_TEXT") || "").trim()
+        };
+      });
+
+      return {
+        ...segment,
+        ROWS: mergedRows,
+        SOURCESYS: getPathSegmentValue(segment, "SOURCESYS", getPathSegmentValue(patchSegment, "SOURCESYS")),
+        TARGETSYSTEM: getPathSegmentValue(segment, "TARGETSYSTEM", getPathSegmentValue(patchSegment, "TARGETSYSTEM"))
+      };
+    });
+
+    return normalizePathMappingPayload({
+      ...baseResult,
+      SEGMENTS: mergedSegments,
+      INCLUDE_TEXT: true
+    });
+  }
+
+  function mergePathLogicPayload(baseResult, logicPayload) {
+    const baseSegments = getPathSegments(baseResult);
+    const patchSegments = getPathSegments(logicPayload);
+    const patchByIndex = new Map(
+      patchSegments.map((segment, index) => [String(segment?.INDEX || index + 1), segment])
+    );
+
+    const mergedSegments = baseSegments.map((segment, index) => {
+      const patchSegment = patchByIndex.get(String(segment?.INDEX || index + 1));
+      if (!patchSegment) {
+        return segment;
+      }
+
+      const patchRows = getPathRows(patchSegment);
+      const patchMap = new Map(patchRows.map((row) => [buildPathTextRowKey(row), row]));
+      const mergedRows = getPathRows(segment).map((row) => {
+        const patchRow = patchMap.get(buildPathTextRowKey(row));
+        if (!patchRow) {
+          return {
+            ...row,
+            LOGIC_ENTRIES: getPathRowLogicEntries(row),
+            HAS_LOGIC_ENTRY: getPathRowHasLogicEntry(row)
+          };
+        }
+        return {
+          ...row,
+          LOGIC_ENTRIES: getPathRowLogicEntries(patchRow),
+          HAS_LOGIC_ENTRY: getPathRowHasLogicEntry(patchRow)
+        };
+      });
+
+      return {
+        ...segment,
+        ROWS: mergedRows,
+        STEP_LOGIC: getPathStepLogicGroups(patchSegment),
+        STEP_LOGIC_ENTRY_COUNT: Number(patchSegment?.STEP_LOGIC_ENTRY_COUNT || 0)
+      };
+    });
+
+    return normalizePathMappingPayload({
+      ...baseResult,
+      SEGMENTS: mergedSegments,
+      INCLUDE_LOGIC: true
+    });
   }
 
   async function ensurePathMappingFeatures(required = {}, loadingText = "正在补充路径映射数据...") {
@@ -4284,13 +4720,49 @@
       throw new Error("当前没有可用于补充加载的路径段信息。");
     }
 
-    const nextResult = await withAppLoading(loadingText, async () => fetchPathMapping(segments, {
-      includeLogic: activePathMappingFeatures.logic || needLogic,
-      includeText: activePathMappingFeatures.text || needText
-    }));
-    activePathMappingResult = nextResult;
-    activePathMappingFeatures = getPathMappingFeaturesFromPayload(nextResult);
-    return nextResult;
+    const targetLogic = activePathMappingFeatures.logic || needLogic;
+    const targetText = activePathMappingFeatures.text || needText;
+    if (activePathFeatureLoad?.promise) {
+      const inflightSatisfies = (!targetLogic || activePathFeatureLoad.logic) && (!targetText || activePathFeatureLoad.text);
+      if (inflightSatisfies) {
+        return activePathFeatureLoad.promise;
+      }
+    }
+
+    const featurePromise = (async () => {
+      let nextResult = activePathMappingResult;
+      if (needLogic) {
+        const logicPayload = await withAppLoading(loadingText, async () => fetchPathLogic(segments));
+        nextResult = mergePathLogicPayload(nextResult, logicPayload);
+      }
+
+      if (needText) {
+        const textPayload = await withAppLoading(loadingText, async () => fetchPathText(segments));
+        nextResult = mergePathTextPayload(nextResult, textPayload);
+      }
+
+      activePathMappingResult = nextResult;
+      activeAlignedRowsForView = getVisibleAlignedSegmentRows(getPathSegments(nextResult));
+      activePathMappingFeatures = {
+        logic: activePathMappingFeatures.logic || needLogic,
+        text: activePathMappingFeatures.text || needText
+      };
+      return nextResult;
+    })();
+
+    activePathFeatureLoad = {
+      logic: targetLogic,
+      text: targetText,
+      promise: featurePromise
+    };
+
+    try {
+      return await featurePromise;
+    } finally {
+      if (activePathFeatureLoad?.promise === featurePromise) {
+        activePathFeatureLoad = null;
+      }
+    }
   }
 
   function setPathSearchBusy(isBusy) {
@@ -4319,14 +4791,14 @@
   }
 
   function getSelectedPathCandidate() {
-    const items = activePathSearchResult?.candidate_paths;
-    if (!Array.isArray(items) || !items.length) return null;
+    const items = getPathCandidatePaths(activePathSearchResult);
+    if (!items.length) return null;
     return items.find((item) => item.id === selectedPathCandidateId) || null;
   }
 
   function getAppliedPathCandidate() {
-    const items = activePathSearchResult?.candidate_paths;
-    if (!Array.isArray(items) || !items.length) return null;
+    const items = getPathCandidatePaths(activePathSearchResult);
+    if (!items.length) return null;
     return items.find((item) => item.id === appliedPathCandidateId) || null;
   }
 
@@ -4346,7 +4818,7 @@
     if (!pathGraphCanvas) return;
 
     const result = activePathSearchResult;
-    const items = Array.isArray(result?.candidate_paths) ? result.candidate_paths : [];
+    const items = getPathCandidatePaths(result);
     if (!items.length) {
       renderPathGraphEmptyState("No Path Found", "当前条件下未找到候选路径，请调整查询条件后重试。");
       renderPathSelectionSummaryState();
@@ -4358,10 +4830,11 @@
       <div class="path-candidate-list">
         ${items.map((path) => {
           const isSelected = path.id === selectedPathCandidateId;
-          const routeHtml = Array.isArray(path.node_sequence)
-            ? path.node_sequence.map((node, index) => `
-                <span class="path-node-pill" title="${escAttr(node.object_name || node.id || "")}">${esc(node.id || "")}</span>
-                ${index < path.node_sequence.length - 1 ? '<span class="path-route-arrow">→</span>' : ""}
+          const nodeSequence = getPathNodeSequence(path);
+          const routeHtml = nodeSequence.length
+            ? nodeSequence.map((node, index) => `
+                <span class="path-node-pill" title="${escAttr(node.OBJECT_NAME || node.id || "")}">${esc(node.id || "")}</span>
+                ${index < nodeSequence.length - 1 ? '<span class="path-route-arrow">→</span>' : ""}
               `).join("")
             : "";
           return `
@@ -4369,7 +4842,7 @@
               <span class="path-candidate-inline">
                 <span class="path-candidate-head">
                   <span class="path-candidate-title">Path ${esc(String(path.index || ""))}</span>
-                  <span class="path-candidate-count">${formatCount(path.segment_count || 0)} segments</span>
+                  <span class="path-candidate-count">${formatCount(path.SEGMENT_COUNT || 0)} segments</span>
                 </span>
                 <span class="path-candidate-route">${routeHtml}</span>
               </span>
@@ -4378,6 +4851,7 @@
         }).join("")}
       </div>
     `;
+
     renderPathSelectionSummaryState();
   }
 
@@ -4416,12 +4890,12 @@
 
   function isSupplementedAlignedCell(cell) {
     if (!cell) return false;
-    const rowKind = String(cell?.row_kind || "").trim().toLowerCase();
+    const rowKind = String(getPathRowValue(cell, "ROW_KIND") || "").trim().toLowerCase();
     if (rowKind === "target_only") return true;
-    const targetField = String(cell?.target_field || "").trim();
-    const sourceField = String(cell?.source_field || "").trim();
-    const rule = String(cell?.rule || "").trim();
-    const aggr = String(cell?.aggr || "").trim();
+    const targetField = String(getPathRowValue(cell, "TARGET_FIELD") || "").trim();
+    const sourceField = String(getPathRowValue(cell, "SOURCE_FIELD") || "").trim();
+    const rule = String(getPathRowValue(cell, "RULE") || "").trim();
+    const aggr = String(getPathRowValue(cell, "AGGR") || "").trim();
     return Boolean(targetField) && !sourceField && !rule && !aggr;
   }
 
@@ -4429,10 +4903,10 @@
     for (let segmentIndex = segmentCount - 1; segmentIndex >= 0; segmentIndex -= 1) {
       const cell = row?.[segmentIndex] || null;
       const hasContent = Boolean(
-        String(cell?.source_field || "").trim() ||
-        String(cell?.target_field || "").trim() ||
-        String(cell?.rule || "").trim() ||
-        String(cell?.aggr || "").trim()
+        String(getPathRowValue(cell, "SOURCE_FIELD") || "").trim() ||
+        String(getPathRowValue(cell, "TARGET_FIELD") || "").trim() ||
+        String(getPathRowValue(cell, "RULE") || "").trim() ||
+        String(getPathRowValue(cell, "AGGR") || "").trim()
       );
       if (hasContent) {
         return {
@@ -4449,14 +4923,14 @@
 
   function getAlignedRowCategoryRank(cell) {
     if (!cell) return 3;
-    const rowKind = String(cell?.row_kind || "").trim().toLowerCase();
+    const rowKind = String(getPathRowValue(cell, "ROW_KIND") || "").trim().toLowerCase();
     if (rowKind === "source_only") return 1;
     return 0;
   }
 
   function getAlignedRowRuleRank(cell) {
     if (!cell) return 3;
-    const rule = String(cell?.rule || "").trim();
+    const rule = String(getPathRowValue(cell, "RULE") || "").trim();
     if (rule) return 0;
     if (isSupplementedAlignedCell(cell)) return 2;
     return 0;
@@ -4468,7 +4942,7 @@
 
     const segmentCount = normalizedSegments.length;
     const lastSegmentIndex = segmentCount - 1;
-    const lastRows = Array.isArray(normalizedSegments[lastSegmentIndex]?.rows) ? normalizedSegments[lastSegmentIndex].rows : [];
+    const lastRows = getPathRows(normalizedSegments[lastSegmentIndex]);
     let alignedRows = lastRows.length
       ? lastRows.map((cell) => {
           const row = Array.from({ length: segmentCount }, () => null);
@@ -4478,13 +4952,13 @@
       : [Array.from({ length: segmentCount }, () => null)];
 
     for (let segmentIndex = lastSegmentIndex - 1; segmentIndex >= 0; segmentIndex -= 1) {
-      const currentRows = Array.isArray(normalizedSegments[segmentIndex]?.rows) ? normalizedSegments[segmentIndex].rows : [];
+      const currentRows = getPathRows(normalizedSegments[segmentIndex]);
       const nextIndex = segmentIndex + 1;
       const nextRowsByKey = new Map();
       const nextRowsWithoutKey = [];
 
       alignedRows.forEach((row) => {
-        const key = normalizeAlignedMappingKey(row?.[nextIndex]?.source_field);
+        const key = normalizeAlignedMappingKey(getPathRowValue(row?.[nextIndex], "SOURCE_FIELD"));
         if (!key) {
           nextRowsWithoutKey.push(cloneAlignedMappingRow(row, segmentCount));
           return;
@@ -4498,7 +4972,7 @@
       const currentRowsByKey = new Map();
       const currentRowsWithoutKey = [];
       currentRows.forEach((cell) => {
-        const key = normalizeAlignedMappingKey(cell?.target_field);
+        const key = normalizeAlignedMappingKey(getPathRowValue(cell, "TARGET_FIELD"));
         if (!key) {
           currentRowsWithoutKey.push(cell);
           return;
@@ -4513,7 +4987,7 @@
       const consumedKeys = new Set();
 
       alignedRows.forEach((row) => {
-        const key = normalizeAlignedMappingKey(row?.[nextIndex]?.source_field);
+        const key = normalizeAlignedMappingKey(getPathRowValue(row?.[nextIndex], "SOURCE_FIELD"));
         if (!key || consumedKeys.has(key)) {
           return;
         }
@@ -4536,7 +5010,7 @@
       });
 
       currentRows.forEach((cell) => {
-        const key = normalizeAlignedMappingKey(cell?.target_field);
+        const key = normalizeAlignedMappingKey(getPathRowValue(cell, "TARGET_FIELD"));
         if (!key || consumedKeys.has(key)) {
           return;
         }
@@ -4582,8 +5056,8 @@
 
         const leftCell = leftPrimary.cell || left.row[lastSegmentIndex];
         const rightCell = rightPrimary.cell || right.row[lastSegmentIndex];
-        const leftPos = Number.parseInt(String(leftCell?.ruleposit || "").trim(), 10);
-        const rightPos = Number.parseInt(String(rightCell?.ruleposit || "").trim(), 10);
+        const leftPos = Number.parseInt(String(getPathRowValue(leftCell, "RULEPOSIT") || "").trim(), 10);
+        const rightPos = Number.parseInt(String(getPathRowValue(rightCell, "RULEPOSIT") || "").trim(), 10);
         const leftSort = Number.isFinite(leftPos) ? leftPos : Number.POSITIVE_INFINITY;
         const rightSort = Number.isFinite(rightPos) ? rightPos : Number.POSITIVE_INFINITY;
         if (leftSort !== rightSort) {
@@ -4598,25 +5072,25 @@
     const alignedRows = buildAlignedSegmentRows(segments);
     return alignedRows.filter((row) => {
       return segments.every((segment, segmentIndex) => {
-        if (!pathHideNonKeyByStep[segment.index]) {
+        if (!pathHideNonKeyByStep[segment.INDEX]) {
           return true;
         }
         const cell = row[segmentIndex];
         if (!cell) {
           return true;
         }
-        return String(cell?.target_key || "").trim().toUpperCase() === "X";
+        return String(getPathRowValue(cell, "TARGET_KEY") || "").trim().toUpperCase() === "X";
       });
     });
   }
 
   function renderMappingStepToggle(segment, extraClass = "") {
-    const nonKeyVisible = !pathHideNonKeyByStep[segment.index];
+    const nonKeyVisible = !pathHideNonKeyByStep[segment.INDEX];
     const className = ["mapping-step-toggle", nonKeyVisible ? "is-active" : "", extraClass]
       .filter(Boolean)
       .join(" ");
     return `
-      <label class="${className}" data-step-toggle="${escAttr(String(segment.index || ""))}">
+      <label class="${className}" data-step-toggle="${escAttr(String(segment.INDEX || ""))}">
         <span class="mapping-step-toggle-label">Non-key fields</span>
         <span class="mapping-step-toggle-state">${nonKeyVisible ? "ON" : "OFF"}</span>
         <input class="mapping-step-toggle-input" type="checkbox" ${nonKeyVisible ? "checked" : ""} />
@@ -4630,6 +5104,19 @@
       .join(" ");
     return `
       <label class="${className}" data-field-text-toggle="${escAttr(String(toggleScope || ""))}">
+        <span class="mapping-step-toggle-label">${esc(label)}</span>
+        <span class="mapping-step-toggle-state">${isVisible ? "ON" : "OFF"}</span>
+        <input class="mapping-step-toggle-input" type="checkbox" ${isVisible ? "checked" : ""} />
+      </label>
+    `;
+  }
+
+  function renderMappingFieldInfoToggle(isVisible, extraClass = "", label = "Field info") {
+    const className = ["mapping-step-toggle", isVisible ? "is-active" : "", extraClass]
+      .filter(Boolean)
+      .join(" ");
+    return `
+      <label class="${className}" data-field-info-toggle="all">
         <span class="mapping-step-toggle-label">${esc(label)}</span>
         <span class="mapping-step-toggle-state">${isVisible ? "ON" : "OFF"}</span>
         <input class="mapping-step-toggle-input" type="checkbox" ${isVisible ? "checked" : ""} />
@@ -4864,11 +5351,11 @@
         const ruleId = Number(data?.[`ruleId_${segmentIndex}`] || 0);
         const stepId = Number(data?.[`stepId_${segmentIndex}`] || 0);
         const logicEntryCount = Number(data?.[`logicEntryCount_${segmentIndex}`] || 0);
+        const hasLogicEntry = Boolean(data?.[`hasLogicEntry_${segmentIndex}`]);
         const showSupplementedX = Boolean(targetField) && !sourceField && !rule && !aggr;
-        const canTryLazyLoad = !activePathMappingFeatures.logic && Boolean(rule);
         this.gui.innerHTML = renderMappingRuleDisplay(rule, {
           showSupplementedX,
-          logicViewerAttrs: (logicEntryCount > 0 || canTryLazyLoad) ? {
+          logicViewerAttrs: (logicEntryCount > 0 || hasLogicEntry) ? {
             "data-rule-logic-open": "1",
             "data-segment-index": String(segmentIndex),
             "data-tran-id": tranId,
@@ -5013,6 +5500,27 @@
     }
   }
 
+  function autoSizeAlignedFieldColumns(api) {
+    if (!api || typeof api.getAllDisplayedColumns !== "function" || typeof api.autoSizeColumns !== "function") {
+      return;
+    }
+
+    const displayedColumns = api.getAllDisplayedColumns() || [];
+    const fieldColumnIds = displayedColumns
+      .map((column) => (typeof column?.getColId === "function" ? column.getColId() : ""))
+      .filter((colId) => colId === "sourceField" || /^targetField_\d+$/.test(colId));
+
+    if (!fieldColumnIds.length) {
+      return;
+    }
+
+    try {
+      api.autoSizeColumns(fieldColumnIds, true);
+    } catch {
+      api.autoSizeColumns(fieldColumnIds);
+    }
+  }
+
   function syncAgGridGroupHeaderHeight(api, gridHost) {
     const host = gridHost || document.getElementById("mappingAgGrid");
     const shell = host?.closest(".mapping-ag-grid-shell") || null;
@@ -5073,25 +5581,32 @@
     const records = alignedRows.map((row, rowIndex) => {
       const record = {
         __rowIndex: rowIndex + 1,
-        sourceField: String(row?.[0]?.source_field || "").trim(),
-        sourceText: String(row?.[0]?.source_text || "").trim(),
-        sourceFieldType: String(row?.[0]?.source_fieldtype || "").trim(),
-        sourceKey: String(row?.[0]?.source_key || "").trim()
+        sourceField: String(getPathRowValue(row?.[0], "SOURCE_FIELD") || "").trim(),
+        sourceText: String(getPathRowValue(row?.[0], "SOURCE_TEXT") || "").trim(),
+        sourceDataType: String(getPathRowValue(row?.[0], "SOURCE_DATATYPE") || "").trim(),
+        sourceLength: formatMappingFieldMetric(getPathRowValue(row?.[0], "SOURCE_LENGTH")),
+        sourceDecimals: formatMappingFieldMetric(getPathRowValue(row?.[0], "SOURCE_DECIMALS")),
+        sourceFieldType: String(getPathRowValue(row?.[0], "SOURCE_FIELDTYPE") || "").trim(),
+        sourceKey: String(getPathRowValue(row?.[0], "SOURCE_KEY") || "").trim()
       };
 
       segments.forEach((segment, segmentIndex) => {
         const cell = row?.[segmentIndex] || null;
-        record[`rule_${segmentIndex}`] = String(cell?.rule || "").trim();
-        record[`aggr_${segmentIndex}`] = String(cell?.aggr || "").trim();
-        record[`tranId_${segmentIndex}`] = String(cell?.tran_id || "").trim();
-        record[`ruleId_${segmentIndex}`] = Number(cell?.rule_id || 0);
-        record[`stepId_${segmentIndex}`] = Number(cell?.step_id || 0);
-        record[`logicEntryCount_${segmentIndex}`] = Array.isArray(cell?.logic_entries) ? cell.logic_entries.length : 0;
-        record[`targetFieldType_${segmentIndex}`] = String(cell?.target_fieldtype || "").trim();
-        record[`stepSourceField_${segmentIndex}`] = String(cell?.source_field || "").trim();
-        record[`targetField_${segmentIndex}`] = String(cell?.target_field || "").trim();
-        record[`targetText_${segmentIndex}`] = String(cell?.target_text || "").trim();
-        record[`targetKey_${segmentIndex}`] = String(cell?.target_key || "").trim();
+        record[`rule_${segmentIndex}`] = String(getPathRowValue(cell, "RULE") || "").trim();
+        record[`aggr_${segmentIndex}`] = String(getPathRowValue(cell, "AGGR") || "").trim();
+        record[`tranId_${segmentIndex}`] = String(getPathRowValue(cell, "TRANID") || "").trim();
+        record[`ruleId_${segmentIndex}`] = Number(getPathRowValue(cell, "RULEID") || 0);
+        record[`stepId_${segmentIndex}`] = Number(getPathRowValue(cell, "STEPID") || 0);
+        record[`logicEntryCount_${segmentIndex}`] = getPathRowLogicEntries(cell).length;
+        record[`hasLogicEntry_${segmentIndex}`] = getPathRowHasLogicEntry(cell);
+        record[`targetFieldType_${segmentIndex}`] = String(getPathRowValue(cell, "TARGET_FIELDTYPE") || "").trim();
+        record[`stepSourceField_${segmentIndex}`] = String(getPathRowValue(cell, "SOURCE_FIELD") || "").trim();
+        record[`targetField_${segmentIndex}`] = String(getPathRowValue(cell, "TARGET_FIELD") || "").trim();
+        record[`targetText_${segmentIndex}`] = String(getPathRowValue(cell, "TARGET_TEXT") || "").trim();
+        record[`targetDataType_${segmentIndex}`] = String(getPathRowValue(cell, "TARGET_DATATYPE") || "").trim();
+        record[`targetLength_${segmentIndex}`] = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_LENGTH"));
+        record[`targetDecimals_${segmentIndex}`] = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_DECIMALS"));
+        record[`targetKey_${segmentIndex}`] = String(getPathRowValue(cell, "TARGET_KEY") || "").trim();
       });
 
       return record;
@@ -5123,28 +5638,62 @@
     return count > 0 ? `${count} keys` : "None";
   }
 
+  function formatMappingFieldMetric(value) {
+    if (value === null || value === undefined) return "";
+    const text = String(value).trim();
+    if (!text) return "";
+    const numeric = Number(text);
+    return Number.isFinite(numeric) ? String(numeric) : text;
+  }
+
   function renderWithKeyCompact(keyCount) {
     return `<div class="mapping-step-meta-line">With Key: ${esc(formatWithKeyLabel(keyCount))}</div>`;
   }
 
+  function formatPathObjectLabel(technicalName, displayName) {
+    const normalizedTechnicalName = String(technicalName || "").trim() || "--";
+    const normalizedDisplayName = String(displayName || "").trim();
+    if (!normalizedDisplayName || normalizedDisplayName === normalizedTechnicalName) {
+      return normalizedTechnicalName;
+    }
+    return `${normalizedTechnicalName} | ${normalizedDisplayName}`;
+  }
+
+  function renderPathObjectLabel(technicalName, displayName, copyLabel) {
+    const normalizedTechnicalName = String(technicalName || "").trim() || "--";
+    const normalizedDisplayName = String(displayName || "").trim();
+    const normalizedCopyLabel = String(copyLabel || "对象技术名").trim() || "对象技术名";
+    const copyMarkup = normalizedTechnicalName && normalizedTechnicalName !== "--"
+      ? renderCopyIconButton(normalizedTechnicalName, normalizedCopyLabel, "mapping-copy-btn-inline mapping-copy-btn-header")
+      : "";
+    const separatorMarkup = normalizedDisplayName && normalizedDisplayName !== normalizedTechnicalName
+      ? `<span class="mapping-step-route-separator">|</span>`
+      : "";
+    const nameMarkup = normalizedDisplayName && normalizedDisplayName !== normalizedTechnicalName
+      ? `<span class="mapping-step-route-name-wrap"><span class="mapping-step-route-name">${esc(normalizedDisplayName)}</span>${renderCopyIconButton(normalizedDisplayName, `${normalizedCopyLabel}文本`, "mapping-copy-btn-inline mapping-copy-btn-header")}</span>`
+      : "";
+    return `<span class="mapping-path-object-label">${renderContextCopyText(normalizedTechnicalName, "mapping-step-route-text", normalizedCopyLabel)}${separatorMarkup}${nameMarkup}</span>${copyMarkup}`;
+  }
+
   function buildAgGridStepHeaderMeta(segment, segmentIndex) {
     const stepToggleKey = getStepFieldTextToggleKey(segment, segmentIndex);
-    const targetTextVisible = isStepTargetFieldTextVisible(segment, segmentIndex);
-    const stepLabel = `Step ${String(segment.index || segmentIndex + 1)}`;
-    const targetName = String(segment.target || "--").trim() || "--";
-    const targetType = String(segment?.target_type || "").trim();
+    const stepLabel = `Step ${String(segment.INDEX || segmentIndex + 1)}`;
+    const targetName = String(segment.TARGETNAME || "--").trim() || "--";
+    const targetType = getPathSegmentValue(segment, "TARGETTYPE");
     const normalizedTargetType = normalizePathObjectType(targetType);
-    const targetSystem = String(segment?.target_system || "").trim();
+    const targetSystem = getPathSegmentValue(segment, "TARGETSYSTEM");
+    const targetDisplayName = getPathSegmentValue(segment, "TARGET_DISPLAY_NAME");
     const targetIconMarkup = renderObjectTypeIcon(targetType, targetName);
-    const tranIds = Array.isArray(segment?.tran_ids)
-      ? segment.tran_ids.map((item) => String(item || "").trim()).filter(Boolean)
-      : [];
+    const tranIds = getPathSegmentTranIds(segment);
+    const trNames = getPathSegmentTrNames(segment);
     const tranLabel = tranIds.length ? `TRANID: ${tranIds.join(", ")}` : "TRANID: --";
-    const targetDiag = segment?.diagnostics?.target || {};
-    const targetKeyCount = countUniqueKeyFields(segment?.rows, "target_field", "target_key");
+    const trNameLabel = trNames.length ? `TR Name: ${trNames.join(" | ")}` : "TR Name: --";
+    const targetDiag = getPathDiagnosticsBucket(segment, "TARGET");
+    const targetKeyCount = countUniqueKeyFields(getPathRows(segment), "TARGET_FIELD", "TARGET_KEY");
     const targetWithKeyLabel = formatWithKeyLabel(targetKeyCount);
+    const targetLabel = formatPathObjectLabel(targetName, targetDisplayName);
     const detailLines = [
-      `<div class="mapping-step-header-stack-line mapping-step-header-target-line">${targetIconMarkup}<span class="mapping-step-route-text">${esc(targetName)}</span>${renderCopyIconButton(targetName, "目标技术名", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`
+      `<div class="mapping-step-header-stack-line mapping-step-header-target-line">${targetIconMarkup}${renderPathObjectLabel(targetName, targetDisplayName, "目标技术名")}</div>`
     ];
 
     if (normalizedTargetType === "RSDS" && targetSystem) {
@@ -5152,6 +5701,8 @@
     } else {
       detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line">${renderTranIdIcon()}<span class="mapping-step-tran-text">${esc(tranLabel)}</span>${renderCopyIconButton(tranIds.join(", "), "转换ID", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`);
     }
+
+    detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line mapping-step-header-subline"><span class="mapping-tran-id-icon-wrap is-spacer" aria-hidden="true"></span><span class="mapping-step-tran-text">${esc(trNameLabel)}</span>${trNames.length ? renderCopyIconButton(trNames.join(" | "), "转换名称", "mapping-copy-btn-inline mapping-copy-btn-header") : ""}</div>`);
 
     detailLines.push(renderMappingDiagnosticFieldStatsCompact("target_field", targetDiag, {
       withKeyLabel: normalizedTargetType === "RSDS" || normalizedTargetType === "TRCS" || normalizedTargetType === "ADSO"
@@ -5161,30 +5712,29 @@
 
     return {
       stepLabel,
-      routeLabel: targetName,
+      routeLabel: targetLabel,
       routeMarkup: `<div class="mapping-step-header-lines">${detailLines.join("")}</div>`,
       tranLabel,
       tranMarkup: "",
-      toggleMarkup: `${renderMappingStepToggle(segment, "mapping-step-toggle-embedded")}${renderMappingFieldTextToggle(`step:${stepToggleKey}`, targetTextVisible, "mapping-step-toggle-embedded")}${renderStepLogicTrigger(segment)}`
+      toggleMarkup: `${renderMappingStepToggle(segment, "mapping-step-toggle-embedded")}${renderStepLogicTrigger(segment)}`
     };
   }
 
   function buildAgGridSourceHeaderMeta(segments) {
-    const sourceName = String(activePathSearchResult?.source_name || segments[0]?.source || "--").trim() || "--";
-    const sourceType = String(activePathSearchResult?.source_type || segments[0]?.source_type || "").trim();
+    const sourceName = getPathSummaryValue(activePathSearchResult, "SOURCE", getPathSegmentValue(segments?.[0], "SOURCE", "--")) || "--";
+    const sourceType = getPathSegmentValue(segments?.[0], "SOURCETYPE");
     const normalizedSourceType = normalizePathObjectType(sourceType);
-    const sourceSystem = String(activePathSearchResult?.source_system || "").trim() || "--";
+    const sourceSystem = getPathSummaryValue(activePathSearchResult, "SOURCESYS", getPathSegmentValue(segments?.[0], "SOURCESYS", "--")) || "--";
+    const sourceDisplayName = getPathSegmentValue(segments?.[0], "SOURCE_DISPLAY_NAME");
     const sourceIconMarkup = renderObjectTypeIcon(sourceType, sourceName);
-    const sourceTextVisible = isSourceFieldTextVisible();
-    const sourceDiag = segments[0]?.diagnostics?.source || {};
-    const sourceTranIds = Array.isArray(segments?.[0]?.tran_ids)
-      ? segments[0].tran_ids.map((item) => String(item || "").trim()).filter(Boolean)
-      : [];
+    const sourceDiag = getPathDiagnosticsBucket(segments?.[0], "SOURCE");
+    const sourceTranIds = getPathSegmentTranIds(segments?.[0]);
     const sourceTranLabel = sourceTranIds.length ? `TRANID: ${sourceTranIds.join(", ")}` : "TRANID: --";
-    const sourceKeyCount = countUniqueKeyFields(segments?.[0]?.rows, "source_field", "source_key");
+    const sourceKeyCount = countUniqueKeyFields(getPathRows(segments?.[0]), "SOURCE_FIELD", "SOURCE_KEY");
     const sourceWithKeyLabel = formatWithKeyLabel(sourceKeyCount);
+    const sourceLabel = formatPathObjectLabel(sourceName, sourceDisplayName);
     const detailLines = [
-      `<div class="mapping-step-header-stack-line mapping-step-header-target-line">${sourceIconMarkup}<span class="mapping-step-route-text">${esc(sourceName)}</span>${renderCopyIconButton(sourceName, "Source 技术名", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`
+      `<div class="mapping-step-header-stack-line mapping-step-header-target-line">${sourceIconMarkup}${renderPathObjectLabel(sourceName, sourceDisplayName, "Source 技术名")}</div>`
     ];
 
     if (normalizedSourceType === "RSDS") {
@@ -5203,11 +5753,11 @@
 
     return {
       title: "Source",
-      detail: sourceName,
+      detail: sourceLabel,
       detailMarkup: `<div class="mapping-step-header-lines">${detailLines.join("")}</div>`,
       extra: "",
       extraMarkup: "",
-      toggleMarkup: renderMappingFieldTextToggle("source", sourceTextVisible, "mapping-step-toggle-embedded")
+      toggleMarkup: ""
     };
   }
 
@@ -5238,7 +5788,8 @@
   function buildAgGridStepHeaderTooltip(segment, segmentIndex) {
     const meta = buildAgGridStepHeaderMeta(segment, segmentIndex);
     const tranLabel = String(meta.tranLabel || "TRANID: --").replace(/^TRANID:\s*/i, "");
-    return `${meta.stepLabel}\n${meta.routeLabel}\nTRANID: ${tranLabel}`;
+    const trNameLabel = getPathSegmentTrNames(segment).join(" | ") || "--";
+    return `${meta.stepLabel}\n${meta.routeLabel}\nTRANID: ${tranLabel}\nTR Name: ${trNameLabel}`;
   }
 
   function buildAgGridSourceHeaderTooltip(segments) {
@@ -5249,6 +5800,42 @@
   function buildAgGridColumnDefs(segments) {
     const sourceMeta = buildAgGridSourceHeaderMeta(segments);
     const sourceTextVisible = isSourceFieldTextVisible();
+    const fieldInfoVisible = isFieldInfoVisible();
+    const sourceInfoColumns = fieldInfoVisible ? [
+      {
+        headerName: "Data Type",
+        field: "sourceDataType",
+        pinned: "left",
+        width: MAPPING_FIELD_INFO_TYPE_MIN_WIDTH,
+        minWidth: MAPPING_FIELD_INFO_TYPE_MIN_WIDTH,
+        resizable: true,
+        sortable: true,
+        cellClass: "ag-cell-center",
+        headerClass: "ag-cell-center"
+      },
+      {
+        headerName: "Length",
+        field: "sourceLength",
+        pinned: "left",
+        width: MAPPING_FIELD_INFO_LENGTH_MIN_WIDTH,
+        minWidth: MAPPING_FIELD_INFO_LENGTH_MIN_WIDTH,
+        resizable: true,
+        sortable: true,
+        cellClass: "ag-cell-center",
+        headerClass: "ag-cell-center"
+      },
+      {
+        headerName: "Decimals",
+        field: "sourceDecimals",
+        pinned: "left",
+        width: MAPPING_FIELD_INFO_DECIMALS_MIN_WIDTH,
+        minWidth: MAPPING_FIELD_INFO_DECIMALS_MIN_WIDTH,
+        resizable: true,
+        sortable: true,
+        cellClass: "ag-cell-center",
+        headerClass: "ag-cell-center"
+      }
+    ] : [];
     const sourceGroup = {
       headerName: sourceMeta.title,
       headerTooltip: buildAgGridSourceHeaderTooltip(segments),
@@ -5296,6 +5883,7 @@
             })
           }
         ] : []),
+        ...sourceInfoColumns,
         {
           headerName: "KEY",
           field: "sourceKey",
@@ -5379,6 +5967,40 @@
           })
         });
       }
+      if (fieldInfoVisible) {
+        children.push(
+          {
+            headerName: "Data Type",
+            field: `targetDataType_${segmentIndex}`,
+            width: MAPPING_FIELD_INFO_TYPE_MIN_WIDTH,
+            minWidth: MAPPING_FIELD_INFO_TYPE_MIN_WIDTH,
+            resizable: true,
+            sortable: true,
+            cellClass: "ag-cell-center",
+            headerClass: "ag-cell-center"
+          },
+          {
+            headerName: "Length",
+            field: `targetLength_${segmentIndex}`,
+            width: MAPPING_FIELD_INFO_LENGTH_MIN_WIDTH,
+            minWidth: MAPPING_FIELD_INFO_LENGTH_MIN_WIDTH,
+            resizable: true,
+            sortable: true,
+            cellClass: "ag-cell-center",
+            headerClass: "ag-cell-center"
+          },
+          {
+            headerName: "Decimals",
+            field: `targetDecimals_${segmentIndex}`,
+            width: MAPPING_FIELD_INFO_DECIMALS_MIN_WIDTH,
+            minWidth: MAPPING_FIELD_INFO_DECIMALS_MIN_WIDTH,
+            resizable: true,
+            sortable: true,
+            cellClass: "ag-cell-center",
+            headerClass: "ag-cell-center"
+          }
+        );
+      }
       children.push({
         headerName: "KEY",
         field: `targetKey_${segmentIndex}`,
@@ -5447,7 +6069,10 @@
   }
 
   function getCurrentAlignedRowsForActions() {
-    const fallbackRows = Array.isArray(activeAlignedRowsForView) ? activeAlignedRowsForView : [];
+    const latestSegments = getPathSegments(activePathMappingResult);
+    const fallbackRows = latestSegments.length
+      ? getVisibleAlignedSegmentRows(latestSegments)
+      : (Array.isArray(activeAlignedRowsForView) ? activeAlignedRowsForView : []);
     if (!activeAgGridApi || typeof activeAgGridApi.forEachNodeAfterFilterAndSort !== "function") {
       return fallbackRows;
     }
@@ -5672,13 +6297,14 @@
       return;
     }
 
-    const segments = Array.isArray(mappingResult?.segments) ? mappingResult.segments : [];
+    const segments = getPathSegments(mappingResult);
     const alignedRows = getVisibleAlignedSegmentRows(segments);
     const allFieldTextVisible = areAllFieldTextTogglesVisible();
+    const fieldInfoVisible = isFieldInfoVisible();
     activeAlignedRowsForView = alignedRows;
     const sourceSummary = [
-      String(activePathSearchResult?.source_name || segments[0]?.source || "").trim(),
-      String(activePathSearchResult?.source_system || "").trim()
+      getPathSummaryValue(activePathSearchResult, "SOURCE", getPathSegmentValue(segments?.[0], "SOURCE")),
+      getPathSummaryValue(activePathSearchResult, "SOURCESYS", getPathSegmentValue(segments?.[0], "SOURCESYS"))
     ].filter(Boolean).join(" | ") || "--";
 
     mappingPanelsGrid.innerHTML = `
@@ -5691,6 +6317,7 @@
               <button id="mappingAgGridQuickFilterClearBtn" class="glass-btn tiny mapping-ag-grid-filter-clear${activeMappingQuickFilter ? "" : " hidden"}" type="button">Clear</button>
             </div>
             ${renderMappingFieldTextToggle("all", allFieldTextVisible, "mapping-ag-grid-global-toggle", "All fields text")}
+            ${renderMappingFieldInfoToggle(fieldInfoVisible, "mapping-ag-grid-global-toggle", "Field info")}
           </div>
         </div>
         ${renderMappingSourceDiagnostics(mappingResult)}
@@ -5826,16 +6453,7 @@
           if (typeof activeAgGridApi.doLayout === "function") {
             activeAgGridApi.doLayout();
           }
-          if (typeof activeAgGridApi.getAllDisplayedColumns === "function" && typeof activeAgGridApi.autoSizeColumns === "function") {
-            const displayedColumns = activeAgGridApi.getAllDisplayedColumns() || [];
-            const leadColumns = displayedColumns
-              .slice(0, Math.min(displayedColumns.length, 4))
-              .map((column) => (typeof column?.getColId === "function" ? column.getColId() : ""))
-              .filter(Boolean);
-            if (leadColumns.length) {
-              activeAgGridApi.autoSizeColumns(leadColumns);
-            }
-          }
+          autoSizeAlignedFieldColumns(activeAgGridApi);
         } catch {
           // Keep default AG Grid sizing if auto-size is unavailable.
         }
@@ -5877,7 +6495,7 @@
   }
 
   async function copyLastStepSourceKeyFields() {
-    const segments = Array.isArray(activePathMappingResult?.segments) ? activePathMappingResult.segments : [];
+    const segments = getPathSegments(activePathMappingResult);
     if (!segments.length) {
       showToast("请先确定一条路径并等待字段映射加载完成。", "error");
       return;
@@ -5886,8 +6504,8 @@
     const lastSegmentIndex = segments.length - 1;
     const alignedRows = getCurrentAlignedRowsForActions();
     const fields = alignedRows
-      .filter((row) => String(row?.[lastSegmentIndex]?.target_key || "").trim().toUpperCase() === "X")
-      .map((row) => String(row?.[0]?.source_field || "").trim())
+      .filter((row) => String(getPathRowValue(row?.[lastSegmentIndex], "TARGET_KEY") || "").trim().toUpperCase() === "X")
+      .map((row) => String(getPathRowValue(row?.[0], "SOURCE_FIELD") || "").trim())
       .filter(Boolean);
 
     const uniqueFields = [];
@@ -5915,7 +6533,7 @@
 
   function renderAlignedPathMapping(mappingResult) {
     if (!mappingPanelsGrid) return;
-    const segments = Array.isArray(mappingResult?.segments) ? mappingResult.segments : [];
+    const segments = getPathSegments(mappingResult);
     if (!segments.length) {
       renderEmptyPathResult("当前路径没有可展示的字段映射。");
       return;
@@ -5974,7 +6592,7 @@
   }
 
   function getAlignedRuleContentValue(cell) {
-    const rawValue = formatLogicEntriesForExcel(Array.isArray(cell?.logic_entries) ? cell.logic_entries : [], "display");
+    const rawValue = formatLogicEntriesForExcel(getPathRowLogicEntries(cell), "display");
     if (!rawValue) return null;
     return String(rawValue)
       .replace(/^\s*(Formula|Routine|Constant)\s*/i, "")
@@ -5982,14 +6600,95 @@
       .trim() || null;
   }
 
+  function getAlignedExportAdsoTableName(segment, role) {
+    const bucket = getPathDiagnosticsBucket(segment, role);
+    return String(bucket?.adso_table_name || "").trim();
+  }
+
+  function buildAlignedExportObjectLabel(technicalName, displayName, options = {}) {
+    const baseTechnicalName = String(options.technicalNameOverride || technicalName || "").trim() || "--";
+    const normalizedDisplayName = String(displayName || "").trim();
+    if (!normalizedDisplayName || normalizedDisplayName === baseTechnicalName) {
+      return baseTechnicalName;
+    }
+    return `${baseTechnicalName} | ${normalizedDisplayName}`;
+  }
+
+  function prepareAlignedTemplateSheetLayout(worksheet) {
+    if (!worksheet || typeof worksheet.spliceColumns !== "function") {
+      return;
+    }
+
+    const headerRow = PATH_EXPORT_DEFAULT_HEADER_ROW;
+    const headerTokens = [];
+    for (let col = 1; col <= Math.max(worksheet.columnCount, PATH_EXPORT_BLOCK_WIDTH); col += 1) {
+      headerTokens[col] = normalizeTemplateToken(worksheet.getCell(headerRow, col).value);
+    }
+
+    if (headerTokens.includes("datatype") && headerTokens.includes("length") && headerTokens.includes("decimals")) {
+      return;
+    }
+
+    const sourceTextCol = headerTokens.findIndex((token) => token === "text");
+    const ruleCol = headerTokens.findIndex((token) => token === "rule");
+    if (sourceTextCol <= 0 || ruleCol <= 0 || ruleCol <= sourceTextCol) {
+      throw new Error("模板结构无法识别，未找到 Source Text 与 Rule 列。");
+    }
+
+    const insertAt = sourceTextCol + 1;
+    worksheet.spliceColumns(insertAt, 0, [], [], []);
+
+    const textColumn = worksheet.getColumn(sourceTextCol);
+    const ruleColumn = worksheet.getColumn(ruleCol + 3);
+    const sourceTextHeaderCell = worksheet.getCell(headerRow, sourceTextCol);
+    const ruleHeaderCell = worksheet.getCell(headerRow, ruleCol + 3);
+    const templateDataCell = worksheet.getCell(headerRow + 1, sourceTextCol);
+
+    ["Data Type", "Length", "Decimals"].forEach((label, offset) => {
+      const columnIndex = insertAt + offset;
+      const targetColumn = worksheet.getColumn(columnIndex);
+      copyExcelJsColumnStyle(textColumn, targetColumn);
+      targetColumn.width = offset === 0 ? 12 : 8;
+
+      for (let rowIndex = 1; rowIndex <= worksheet.rowCount; rowIndex += 1) {
+        const targetCell = worksheet.getCell(rowIndex, columnIndex);
+        if (rowIndex === headerRow) {
+          copyExcelJsCellStyle(sourceTextHeaderCell, targetCell);
+          targetCell.value = label;
+        } else if (rowIndex < headerRow) {
+          copyExcelJsCellStyle(worksheet.getCell(rowIndex, sourceTextCol), targetCell);
+          targetCell.value = null;
+        } else {
+          copyExcelJsCellStyle(templateDataCell, targetCell);
+          targetCell.value = null;
+        }
+      }
+    });
+
+    for (let rowIndex = 1; rowIndex <= worksheet.rowCount; rowIndex += 1) {
+      const shiftedRuleCol = ruleCol + 3;
+      const shiftedRuleCell = worksheet.getCell(rowIndex, shiftedRuleCol);
+      if (rowIndex === headerRow) {
+        copyExcelJsCellStyle(ruleHeaderCell, shiftedRuleCell);
+      } else {
+        copyExcelJsCellStyle(worksheet.getCell(rowIndex, shiftedRuleCol), shiftedRuleCell);
+      }
+    }
+
+    const view = worksheet.views && worksheet.views[0] ? { ...worksheet.views[0] } : null;
+    if (view && Number.isFinite(view.xSplit) && view.xSplit >= insertAt) {
+      view.xSplit += 3;
+      worksheet.views = [view];
+    }
+  }
+
   function buildExportStepHeaderValues(segment, segmentIndex, alignedRows) {
     const rows = Array.isArray(alignedRows) ? alignedRows : [];
     const stepSourceSystemValue = rows
-      .map((row) => String(row?.[segmentIndex]?.source_system || "").trim())
+      .map((row) => getPathSegmentValue(row?.[segmentIndex], "SOURCESYS"))
       .find(Boolean) || "--";
-    const tranText = Array.isArray(segment?.tran_ids)
-      ? segment.tran_ids.map((item) => String(item || "").trim()).filter(Boolean).join(", ")
-      : "";
+    const tranText = getPathSegmentTranIds(segment).join(", ");
+    const tranNameText = getPathSegmentTrNames(segment).join(" | ");
     const routines = getStepRoutineEntriesByKind(segment);
     const globalEntries = Array.isArray(routines.GLOBAL) ? routines.GLOBAL : [];
     const globalFirst = globalEntries.length > 0 ? [globalEntries[0]] : [];
@@ -6002,14 +6701,42 @@
       formatStepRoutineContent(globalSecond)
     ];
 
+    const stepSourceName = String(segment?.SOURCE || "").trim() || "--";
+    const stepTargetName = String(segment?.TARGETNAME || "").trim() || "--";
+    const sourceAdsoTableName = String(getAlignedExportAdsoTableName(segment, "SOURCE") || "").trim();
+    const targetAdsoTableName = String(getAlignedExportAdsoTableName(segment, "TARGET") || "").trim();
+    const sourceLabel = buildAlignedExportObjectLabel(
+      stepSourceName,
+      segment?.SOURCE_DISPLAY_NAME,
+      {
+        technicalNameOverride: String(segment?.SOURCETYPE || "").trim().toUpperCase() === "ADSO" && sourceAdsoTableName
+          ? sourceAdsoTableName
+          : stepSourceName
+      }
+    );
+    const targetLabel = buildAlignedExportObjectLabel(
+      stepTargetName,
+      segment?.TARGET_DISPLAY_NAME,
+      {
+        technicalNameOverride: String(segment?.TARGETTYPE || "").trim().toUpperCase() === "ADSO" && targetAdsoTableName
+          ? targetAdsoTableName
+          : stepTargetName
+      }
+    );
+
     return {
-      stepTitle: `Step ${segment.index || segmentIndex + 1}: ${segment.source || "--"} -> ${segment.target || "--"}`,
+      stepTitle: `Step ${segment.INDEX || segmentIndex + 1}: ${stepSourceName} -> ${stepTargetName}`,
       transformation: tranText || "None",
+      transformationText: tranNameText,
       sourcesys: stepSourceSystemValue,
-      sourcetype: String(segment?.source_type || "").trim() || "--",
-      sourcetable: String(segment?.source || "").trim() || "--",
-      targettype: String(segment?.target_type || "").trim() || "--",
-      targettable: String(segment?.target || "").trim() || "--",
+      sourcetype: String(segment?.SOURCETYPE || "").trim() || "--",
+      sourcetable: sourceLabel,
+      sourcetableTechnical: sourceLabel.split(" | ")[0] || sourceLabel,
+      sourcetableText: sourceLabel.includes(" | ") ? sourceLabel.split(" | ").slice(1).join(" | ") : "",
+      targettype: String(segment?.TARGETTYPE || "").trim() || "--",
+      targettable: targetLabel,
+      targettableTechnical: targetLabel.split(" | ")[0] || targetLabel,
+      targettableText: targetLabel.includes(" | ") ? targetLabel.split(" | ").slice(1).join(" | ") : "",
       startroutine: routineValues[0] || "None",
       endroutine: routineValues[1] || "None",
       expertroutine: routineValues[2] || "None",
@@ -6031,10 +6758,10 @@
   }
 
   function getAlignedExportGroupSignature(cell) {
-    const targetField = String(cell?.target_field || "").trim();
-    const targetFieldType = String(cell?.target_fieldtype || "").trim();
-    const rule = String(cell?.rule || "").trim();
-    const aggr = String(cell?.aggr || "").trim();
+    const targetField = String(getPathRowValue(cell, "TARGET_FIELD") || "").trim();
+    const targetFieldType = String(getPathRowValue(cell, "TARGET_FIELDTYPE") || "").trim();
+    const rule = String(getPathRowValue(cell, "RULE") || "").trim();
+    const aggr = String(getPathRowValue(cell, "AGGR") || "").trim();
     if (!targetField && !targetFieldType && !rule && !aggr) return "";
     return `${targetFieldType}\u0001${targetField}\u0001${rule}\u0001${aggr}`;
   }
@@ -6077,8 +6804,8 @@
   }
 
   function getStepRoutineEntriesByKind(segment) {
-    const groups = Array.isArray(segment?.step_logic) ? segment.step_logic : [];
-    const entries = groups.flatMap((group) => Array.isArray(group?.entries) ? group.entries : []);
+    const groups = getPathStepLogicGroups(segment);
+    const entries = groups.flatMap((group) => Array.isArray(group?.ENTRIES) ? group.ENTRIES : []);
     const result = {
       START: [],
       END: [],
@@ -6086,7 +6813,7 @@
       GLOBAL: []
     };
     entries.forEach((entry) => {
-      const kind = normalizeLogicKind(entry?.kind);
+      const kind = normalizeLogicKind(entry?.KIND || entry?.kind);
       if (result[kind]) {
         result[kind].push(entry);
       }
@@ -6100,7 +6827,7 @@
     const blocks = list.map((entry) => {
       const content = getLogicEntryContentDisplay(entry) || getLogicEntryContentRaw(entry);
       const title = getLogicEntryDisplayTitle(entry);
-      const kindLabel = formatLogicKindLabel(entry?.kind);
+      const kindLabel = formatLogicKindLabel(entry?.KIND || entry?.kind);
       if (!content) return title || kindLabel;
       if (!title || title === kindLabel) return content;
       return `${title}\n${content}`;
@@ -6231,7 +6958,9 @@
       stepStartColumns,
       firstStepStart,
       blockWidth,
-      stepValueRows
+      stepValueRows,
+      stepValueMainColumnOffset: 1,
+      stepValueTextColumnOffset: 2
     };
   }
 
@@ -6254,6 +6983,7 @@
       worksheet.getCell(anchors.stepTitleRow, columnStart).value = null;
       dynamicValueRows.forEach((rowIndex) => {
         worksheet.getCell(rowIndex, columnStart + 1).value = null;
+        worksheet.getCell(rowIndex, columnStart + 2).value = null;
       });
     }
 
@@ -6267,13 +6997,19 @@
       source_field: ["sourcefield"],
       source_key: ["key"],
       source_text: ["text"],
+      source_datatype: ["datatype"],
+      source_length: ["length"],
+      source_decimals: ["decimals"],
       rule: ["rule"],
       rule_content: ["rulecontent"],
       aggr: ["aggr"],
       target_type: ["targettype"],
       target_field: ["targetfield"],
       target_key: ["key"],
-      target_text: ["text"]
+      target_text: ["text"],
+      target_datatype: ["datatype"],
+      target_length: ["length"],
+      target_decimals: ["decimals"]
     };
 
     const findHeaderColumn = (headerMap, aliases, occurrence = 0, fallbackColumn = 0) => {
@@ -6313,12 +7049,14 @@
     segments.forEach((segment, segmentIndex) => {
       const columnStart = anchors.firstStepStart + (segmentIndex * anchors.blockWidth);
       const columnEnd = columnStart + anchors.blockWidth - 1;
-      const targetTextVisible = isStepTargetFieldTextVisible(segment, segmentIndex);
       const headerMap = buildStepHeaderMap(anchors.headerRow, columnStart, columnEnd);
       const sourceTypeCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.source_type, "Source Type", 0);
       const sourceFieldCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.source_field, "Source Field", 0);
       const sourceKeyCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.source_key, "Source KEY", 0);
       const sourceTextCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.source_text, "Source Text", 0);
+      const sourceDataTypeCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.source_datatype, "Source Data Type", 0);
+      const sourceLengthCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.source_length, "Source Length", 0);
+      const sourceDecimalsCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.source_decimals, "Source Decimals", 0);
       const ruleCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.rule, "Rule", 0);
       const ruleContentCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.rule_content, "Rule Content", 0);
       const aggrCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.aggr, "Aggr.", 0);
@@ -6326,6 +7064,9 @@
       const targetFieldCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_field, "Target Field", 0);
       const targetKeyCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_key, "Target KEY", 1);
       const targetTextCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_text, "Target Text", 1);
+      const targetDataTypeCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_datatype, "Target Data Type", 1);
+      const targetLengthCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_length, "Target Length", 1);
+      const targetDecimalsCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_decimals, "Target Decimals", 1);
       const stepHeaderValues = buildExportStepHeaderValues(segment, segmentIndex, alignedRows);
 
       worksheet.getCell(anchors.stepTitleRow, columnStart).value = stepHeaderValues.stepTitle;
@@ -6345,29 +7086,51 @@
       Object.entries(stepValueWriteMap).forEach(([token, value]) => {
         const rowIndex = Number(anchors.stepValueRows[token] || 0);
         if (rowIndex > 0) {
-          worksheet.getCell(rowIndex, columnStart + 1).value = value;
+          const primaryCell = worksheet.getCell(rowIndex, columnStart + anchors.stepValueMainColumnOffset);
+          const secondaryCell = worksheet.getCell(rowIndex, columnStart + anchors.stepValueTextColumnOffset);
+          primaryCell.value = value;
+          secondaryCell.value = null;
         }
       });
+      const transformationRowIndex = Number(anchors.stepValueRows.transformation || 0);
+      if (transformationRowIndex > 0) {
+        worksheet.getCell(transformationRowIndex, columnStart + anchors.stepValueMainColumnOffset).value = stepHeaderValues.transformation || null;
+        worksheet.getCell(transformationRowIndex, columnStart + anchors.stepValueTextColumnOffset).value = stepHeaderValues.transformationText || null;
+      }
+      const sourceTableRowIndex = Number(anchors.stepValueRows.sourcetable || 0);
+      if (sourceTableRowIndex > 0) {
+        worksheet.getCell(sourceTableRowIndex, columnStart + anchors.stepValueMainColumnOffset).value = stepHeaderValues.sourcetableTechnical || null;
+        worksheet.getCell(sourceTableRowIndex, columnStart + anchors.stepValueTextColumnOffset).value = stepHeaderValues.sourcetableText || null;
+      }
+      const targetTableRowIndex = Number(anchors.stepValueRows.targettable || 0);
+      if (targetTableRowIndex > 0) {
+        worksheet.getCell(targetTableRowIndex, columnStart + anchors.stepValueMainColumnOffset).value = stepHeaderValues.targettableTechnical || null;
+        worksheet.getCell(targetTableRowIndex, columnStart + anchors.stepValueTextColumnOffset).value = stepHeaderValues.targettableText || null;
+      }
       for (let offset = 0; offset < routineLabels.length; offset += 1) {
         const rowIndex = anchors.routineRows[routineLabels[offset]];
         worksheet.getCell(rowIndex, columnStart + 1).value = stepHeaderValues.routineValues[offset] || "None";
+        worksheet.getCell(rowIndex, columnStart + 2).value = null;
       }
 
       alignedRows.forEach((row, rowIndex) => {
         const sourceRowIndex = anchors.dataStartRow + rowIndex;
         const cell = row?.[segmentIndex] || null;
-        const normalizedRule = String(cell?.rule || "").trim().toUpperCase();
-        const hasSourceField = Boolean(String(cell?.source_field || "").trim());
-        const hasTargetField = Boolean(String(cell?.target_field || "").trim());
+        const normalizedRule = String(getPathRowValue(cell, "RULE") || "").trim().toUpperCase();
+        const hasSourceField = Boolean(String(getPathRowValue(cell, "SOURCE_FIELD") || "").trim());
+        const hasTargetField = Boolean(String(getPathRowValue(cell, "TARGET_FIELD") || "").trim());
         const hasNoRule = !normalizedRule && (hasSourceField || hasTargetField);
         const shouldHighlightRule = normalizedRule === "CONSTANT" || normalizedRule === "ROUTINE" || normalizedRule === "FORMULA";
 
-        worksheet.getCell(sourceRowIndex, sourceTypeCol).value = normalizeAlignedExportTypeLabel(cell?.source_fieldtype);
-        worksheet.getCell(sourceRowIndex, sourceFieldCol).value = String(cell?.source_field || "").trim() || null;
-        worksheet.getCell(sourceRowIndex, sourceKeyCol).value = String(cell?.source_key || "").trim() || null;
-        worksheet.getCell(sourceRowIndex, sourceTextCol).value = String(cell?.source_text || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, sourceTypeCol).value = normalizeAlignedExportTypeLabel(getPathRowValue(cell, "SOURCE_FIELDTYPE"));
+        worksheet.getCell(sourceRowIndex, sourceFieldCol).value = String(getPathRowValue(cell, "SOURCE_FIELD") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, sourceKeyCol).value = String(getPathRowValue(cell, "SOURCE_KEY") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, sourceTextCol).value = String(getPathRowValue(cell, "SOURCE_TEXT") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, sourceDataTypeCol).value = String(getPathRowValue(cell, "SOURCE_DATATYPE") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, sourceLengthCol).value = formatMappingFieldMetric(getPathRowValue(cell, "SOURCE_LENGTH")) || null;
+        worksheet.getCell(sourceRowIndex, sourceDecimalsCol).value = formatMappingFieldMetric(getPathRowValue(cell, "SOURCE_DECIMALS")) || null;
         const ruleCell = worksheet.getCell(sourceRowIndex, ruleCol);
-        ruleCell.value = hasNoRule ? "NO RULE" : (String(cell?.rule || "").trim() || null);
+        ruleCell.value = hasNoRule ? "NO RULE" : (String(getPathRowValue(cell, "RULE") || "").trim() || null);
         const ruleContentCell = worksheet.getCell(sourceRowIndex, ruleContentCol);
         ruleContentCell.value = getAlignedRuleContentValue(cell);
         if (hasNoRule) {
@@ -6382,7 +7145,10 @@
               worksheet.getCell(sourceRowIndex, sourceTypeCol),
               worksheet.getCell(sourceRowIndex, sourceFieldCol),
               worksheet.getCell(sourceRowIndex, sourceKeyCol),
-              worksheet.getCell(sourceRowIndex, sourceTextCol)
+              worksheet.getCell(sourceRowIndex, sourceTextCol),
+              worksheet.getCell(sourceRowIndex, sourceDataTypeCol),
+              worksheet.getCell(sourceRowIndex, sourceLengthCol),
+              worksheet.getCell(sourceRowIndex, sourceDecimalsCol)
             ].forEach((targetCell) => {
               setExcelCellFill(targetCell, grayFill);
             });
@@ -6408,14 +7174,17 @@
           setExcelCellFill(ruleCell, yellowFill);
           setExcelCellFill(ruleContentCell, yellowFill);
         }
-        worksheet.getCell(sourceRowIndex, aggrCol).value = String(cell?.aggr || "").trim() || null;
-        worksheet.getCell(sourceRowIndex, targetTypeCol).value = normalizeAlignedExportTypeLabel(cell?.target_fieldtype);
-        worksheet.getCell(sourceRowIndex, targetFieldCol).value = String(cell?.target_field || "").trim() || null;
-        worksheet.getCell(sourceRowIndex, targetKeyCol).value = String(cell?.target_key || "").trim() || null;
-        worksheet.getCell(sourceRowIndex, targetTextCol).value = String(cell?.target_text || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, aggrCol).value = String(getPathRowValue(cell, "AGGR") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, targetTypeCol).value = normalizeAlignedExportTypeLabel(getPathRowValue(cell, "TARGET_FIELDTYPE"));
+        worksheet.getCell(sourceRowIndex, targetFieldCol).value = String(getPathRowValue(cell, "TARGET_FIELD") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, targetKeyCol).value = String(getPathRowValue(cell, "TARGET_KEY") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, targetTextCol).value = String(getPathRowValue(cell, "TARGET_TEXT") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, targetDataTypeCol).value = String(getPathRowValue(cell, "TARGET_DATATYPE") || "").trim() || null;
+        worksheet.getCell(sourceRowIndex, targetLengthCol).value = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_LENGTH")) || null;
+        worksheet.getCell(sourceRowIndex, targetDecimalsCol).value = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_DECIMALS")) || null;
       });
 
-      const targetGroupEndCol = targetTextVisible ? targetTextCol : targetFieldCol;
+      const targetGroupEndCol = targetDecimalsCol;
       const targetGroups = collectAlignedExportGroupsForSegment(alignedRows, segmentIndex);
       const redBorderStyle = {
         style: "medium",
@@ -6436,47 +7205,163 @@
     });
   }
 
-  async function buildStyledPathExportWorkbook(mappingResult, appliedPath, alignedRows) {
-    await ensureExcelJsLoaded();
+  async function loadPathExportTemplateWorkbook() {
+    const errors = [];
+    for (const templateUrl of PATH_EXPORT_TEMPLATE_URL_CANDIDATES) {
+      try {
+        const response = await fetch(templateUrl, { credentials: "same-origin", cache: "no-store" });
+        if (!response.ok) {
+          errors.push(`${templateUrl}: status ${response.status}`);
+          continue;
+        }
+        const templateBuffer = await response.arrayBuffer();
+        const workbook = new window.ExcelJS.Workbook();
+        await workbook.xlsx.load(templateBuffer);
+        return workbook;
+      } catch (error) {
+        const rawMsg = String(error?.message || error || "unknown error").trim();
+        errors.push(`${templateUrl}: ${rawMsg}`);
+      }
+    }
+    throw new Error(`模板文件读取失败。${errors.join(" | ")}`);
+  }
 
-    const response = await fetch(PATH_EXPORT_TEMPLATE_URL, { credentials: "same-origin" });
-    if (!response.ok) {
-      throw new Error(`模板文件读取失败（status ${response.status}）。`);
+  function createFallbackAlignedTemplateWorkbook() {
+    const workbook = new window.ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet(PATH_EXPORT_TEMPLATE_SHEET);
+
+    const labels = [
+      "",
+      "Transformation",
+      "Source Sys.",
+      "Source Type",
+      "Source Table",
+      "Target Type",
+      "Target Table",
+      "Start Routine",
+      "End Routine",
+      "Expert Routine",
+      "Global 1",
+      "Global 2"
+    ];
+    labels.forEach((label, index) => {
+      worksheet.getCell(index + 1, 1).value = label || null;
+    });
+
+    const headerRow = PATH_EXPORT_DEFAULT_HEADER_ROW;
+    const headers = [
+      "Source Type",
+      "Source Field",
+      "KEY",
+      "Text",
+      "Data Type",
+      "Length",
+      "Decimals",
+      "Rule",
+      "Rule Content",
+      "Aggr.",
+      "Target Type",
+      "Target Field",
+      "KEY",
+      "Text",
+      "Data Type",
+      "Length",
+      "Decimals"
+    ];
+    headers.forEach((label, index) => {
+      worksheet.getCell(headerRow, index + 1).value = label;
+    });
+
+    const titleCell = worksheet.getCell(1, 1);
+    titleCell.font = { bold: true, color: { argb: "FFFF0000" }, size: 13 };
+
+    const labelFill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFD9D9D9" }
+    };
+    for (let row = 2; row <= 12; row += 1) {
+      const cell = worksheet.getCell(row, 1);
+      cell.fill = labelFill;
+      cell.font = { bold: false, size: 11 };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FF666666" } },
+        left: { style: "thin", color: { argb: "FF666666" } },
+        bottom: { style: "thin", color: { argb: "FF666666" } },
+        right: { style: "thin", color: { argb: "FF666666" } }
+      };
     }
 
-    const templateBuffer = await response.arrayBuffer();
-    const workbook = new window.ExcelJS.Workbook();
-    await workbook.xlsx.load(templateBuffer);
+    const headerFill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFB8C6D9" }
+    };
+    for (let col = 1; col <= PATH_EXPORT_BLOCK_WIDTH; col += 1) {
+      const cell = worksheet.getCell(headerRow, col);
+      cell.fill = headerFill;
+      cell.font = { bold: false, size: 11 };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FF444444" } },
+        left: { style: "thin", color: { argb: "FF444444" } },
+        bottom: { style: "thin", color: { argb: "FF444444" } },
+        right: { style: "thin", color: { argb: "FF444444" } }
+      };
+    }
 
-    const segments = Array.isArray(mappingResult?.segments) ? mappingResult.segments : [];
+    const dataBorder = {
+      top: { style: "thin", color: { argb: "FF444444" } },
+      left: { style: "thin", color: { argb: "FF444444" } },
+      bottom: { style: "thin", color: { argb: "FF444444" } },
+      right: { style: "thin", color: { argb: "FF444444" } }
+    };
+    for (let row = headerRow + 1; row <= headerRow + 2; row += 1) {
+      for (let col = 1; col <= PATH_EXPORT_BLOCK_WIDTH; col += 1) {
+        const cell = worksheet.getCell(row, col);
+        cell.border = dataBorder;
+        cell.alignment = { vertical: "middle" };
+      }
+    }
+
+    const widths = [16, 30, 8, 26, 12, 8, 10, 14, 16, 8, 14, 28, 8, 24, 12, 8, 10];
+    widths.forEach((width, index) => {
+      worksheet.getColumn(index + 1).width = width;
+    });
+
+    worksheet.views = [{ state: "frozen", ySplit: 13, xSplit: 1 }];
+    return workbook;
+  }
+
+  async function buildStyledPathExportWorkbook(mappingResult, appliedPath, alignedRows) {
+    await ensureExcelJsLoaded();
+    let workbook;
+    try {
+      workbook = await loadPathExportTemplateWorkbook();
+    } catch {
+      workbook = createFallbackAlignedTemplateWorkbook();
+    }
+
+    const segments = getPathSegments(mappingResult);
     const alignedSheet = workbook.getWorksheet(PATH_EXPORT_TEMPLATE_SHEET) || workbook.worksheets[0];
     if (!alignedSheet) {
       throw new Error("模板中未找到 Aligned Mapping 工作表。");
     }
 
+    prepareAlignedTemplateSheetLayout(alignedSheet);
     populateAlignedTemplateSheet(alignedSheet, segments, alignedRows);
 
-    const { detailSheetRows, stepLogicSheetRows, summaryRows } = buildPathExportWorkbookData(mappingResult, appliedPath, alignedRows);
-    const extraSheets = [
-      ["Summary", summaryRows],
-      ["Segment Detail", detailSheetRows],
-      ["Step Logic", stepLogicSheetRows]
-    ];
-
-    extraSheets.forEach(([sheetName, rows]) => {
-      const existing = workbook.getWorksheet(sheetName);
-      if (existing) {
-        workbook.removeWorksheet(existing.id);
+    [...workbook.worksheets].forEach((sheet) => {
+      if (sheet.id !== alignedSheet.id) {
+        workbook.removeWorksheet(sheet.id);
       }
-      const sheet = workbook.addWorksheet(sheetName);
-      appendRowsToWorksheet(sheet, rows);
     });
 
     return workbook;
   }
 
   function buildPathExportWorkbookData(mappingResult, appliedPath, alignedRowsOverride = null) {
-    const segments = Array.isArray(mappingResult?.segments) ? mappingResult.segments : [];
+    const segments = getPathSegments(mappingResult);
     const alignedRows = Array.isArray(alignedRowsOverride) ? alignedRowsOverride : getVisibleAlignedSegmentRows(segments);
     const toExcelTextCell = (value) => {
       const text = String(value || "");
@@ -6485,19 +7370,19 @@
     const toLogicKindCell = (entries) => {
       const list = Array.isArray(entries) ? entries : [];
       if (!list.length) return null;
-      const labels = [...new Set(list.map((entry) => formatLogicKindLabel(entry?.kind)).filter(Boolean))];
+      const labels = [...new Set(list.map((entry) => formatLogicKindLabel(entry?.KIND || entry?.kind)).filter(Boolean))];
       return labels.length ? labels.join(", ") : null;
     };
     const toLogicLanguageCell = (entries) => {
       const list = Array.isArray(entries) ? entries : [];
       if (!list.length) return null;
-      const labels = [...new Set(list.map((entry) => String(entry?.language || "").trim()).filter(Boolean))];
+      const labels = [...new Set(list.map((entry) => String(entry?.LANGUAGE || entry?.language || "").trim()).filter(Boolean))];
       return labels.length ? labels.join(", ") : null;
     };
 
     const alignedSheetRows = [];
     alignedSheetRows.push(segments.flatMap((segment) => [
-      `Step ${segment.index || ""}: ${segment.source || "--"} -> ${segment.target || "--"}`,
+      `Step ${segment.INDEX || ""}: ${segment.SOURCE || "--"} -> ${segment.TARGETNAME || "--"}`,
       null,
       null,
       null,
@@ -6510,12 +7395,12 @@
         segments.flatMap((_, segmentIndex) => {
           const cell = row[segmentIndex];
           return [
-            toExcelTextCell(cell?.source_field),
-            toExcelTextCell(cell?.rule),
-            toExcelTextCell(cell?.aggr),
-            toExcelTextCell(normalizeAlignedExportTypeLabel(cell?.target_fieldtype)),
-            toExcelTextCell(cell?.target_field),
-            toExcelTextCell(cell?.target_key)
+            toExcelTextCell(getPathRowValue(cell, "SOURCE_FIELD")),
+            toExcelTextCell(getPathRowValue(cell, "RULE")),
+            toExcelTextCell(getPathRowValue(cell, "AGGR")),
+            toExcelTextCell(normalizeAlignedExportTypeLabel(getPathRowValue(cell, "TARGET_FIELDTYPE"))),
+            toExcelTextCell(getPathRowValue(cell, "TARGET_FIELD")),
+            toExcelTextCell(getPathRowValue(cell, "TARGET_KEY"))
           ];
         })
       );
@@ -6523,13 +7408,13 @@
 
     const detailSheetRows = [["Step", "Source", "Target", "TRANID", "Source Field", "Rule", "Aggr.", "Target Field", "KEY", "Rule Content Count", "Rule Content Kind", "Rule Content Language", "Rule Content Raw", "Rule Content Display"]];
     segments.forEach((segment) => {
-      const tranText = Array.isArray(segment.tran_ids) ? segment.tran_ids.join(", ") : "";
-      const rows = Array.isArray(segment.rows) ? segment.rows : [];
+      const tranText = getPathSegmentTranIds(segment).join(", ");
+      const rows = getPathRows(segment);
       if (!rows.length) {
         detailSheetRows.push([
-          Number(segment.index || 0),
-          toExcelTextCell(segment.source),
-          toExcelTextCell(segment.target),
+          Number(segment.INDEX || 0),
+          toExcelTextCell(segment.SOURCE),
+          toExcelTextCell(segment.TARGETNAME),
           toExcelTextCell(tranText),
           null,
           null,
@@ -6545,17 +7430,17 @@
         return;
       }
       rows.forEach((row) => {
-        const logicEntries = Array.isArray(row?.logic_entries) ? row.logic_entries : [];
+        const logicEntries = getPathRowLogicEntries(row);
         detailSheetRows.push([
-          Number(segment.index || 0),
-          toExcelTextCell(segment.source),
-          toExcelTextCell(segment.target),
-          toExcelTextCell(row?.tran_id || tranText),
-          toExcelTextCell(row?.source_field),
-          toExcelTextCell(row?.rule),
-          toExcelTextCell(row?.aggr),
-          toExcelTextCell(row?.target_field),
-          toExcelTextCell(row?.target_key),
+          Number(segment.INDEX || 0),
+          toExcelTextCell(segment.SOURCE),
+          toExcelTextCell(segment.TARGETNAME),
+          toExcelTextCell(getPathRowValue(row, "TRANID") || tranText),
+          toExcelTextCell(getPathRowValue(row, "SOURCE_FIELD")),
+          toExcelTextCell(getPathRowValue(row, "RULE")),
+          toExcelTextCell(getPathRowValue(row, "AGGR")),
+          toExcelTextCell(getPathRowValue(row, "TARGET_FIELD")),
+          toExcelTextCell(getPathRowValue(row, "TARGET_KEY")),
           logicEntries.length || null,
           toExcelTextCell(toLogicKindCell(logicEntries)),
           toExcelTextCell(toLogicLanguageCell(logicEntries)),
@@ -6567,18 +7452,18 @@
 
     const stepLogicSheetRows = [["Step", "Source", "Target", "TRANID", "Logic Kind", "Title", "Language", "Raw Content", "Display Content"]];
     segments.forEach((segment) => {
-      const stepLogicGroups = Array.isArray(segment.step_logic) ? segment.step_logic : [];
+      const stepLogicGroups = getPathStepLogicGroups(segment);
       stepLogicGroups.forEach((group) => {
-        const entries = Array.isArray(group?.entries) ? group.entries : [];
+        const entries = Array.isArray(group?.ENTRIES) ? group.ENTRIES : [];
         entries.forEach((entry) => {
           stepLogicSheetRows.push([
-            Number(segment.index || 0),
-            toExcelTextCell(segment.source),
-            toExcelTextCell(segment.target),
-            toExcelTextCell(group?.tran_id || entry?.tran_id),
-            toExcelTextCell(formatLogicKindLabel(entry?.kind)),
+            Number(segment.INDEX || 0),
+            toExcelTextCell(segment.SOURCE),
+            toExcelTextCell(segment.TARGETNAME),
+            toExcelTextCell(group?.TRANID || entry?.TRANID),
+            toExcelTextCell(formatLogicKindLabel(entry?.KIND || entry?.kind)),
             toExcelTextCell(getLogicEntryTitle(entry)),
-            toExcelTextCell(entry?.language),
+            toExcelTextCell(entry?.LANGUAGE || entry?.language),
             toExcelTextCell(getLogicEntryContentRaw(entry)),
             toExcelTextCell(getLogicEntryContentDisplay(entry))
           ]);
@@ -6591,7 +7476,7 @@
 
     const summaryRows = [
       ["Path", appliedPath?.index || ""],
-      ["Segments", appliedPath?.segment_count || segments.length],
+      ["Segments", appliedPath?.SEGMENT_COUNT || segments.length],
       ["View", "AG Grid"],
       ["Visible Rows", alignedRows.length],
       ["Rule Logic Rows", totalRuleLogicRows],
@@ -6621,15 +7506,15 @@
     const workbook = await buildStyledPathExportWorkbook(activePathMappingResult, appliedPath, alignedRows);
 
     const summary = activePathSearchResult || {};
-    const sourceName = String(summary.source_name || "source").replace(/[^A-Za-z0-9_-]+/g, "_");
-    const targetName = String(summary.target_name || "target").replace(/[^A-Za-z0-9_-]+/g, "_");
+    const sourceName = getPathSummaryValue(summary, "SOURCE", "source").replace(/[^A-Za-z0-9_-]+/g, "_");
+    const targetName = getPathSummaryValue(summary, "TARGETNAME", "target").replace(/[^A-Za-z0-9_-]+/g, "_");
     const fileName = `path_mapping_${sourceName}_to_${targetName}_path${appliedPath.index || 1}.xlsx`;
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([
       buffer
     ], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 
-    const hasSavePicker = typeof window.showSaveFilePicker === "function" && !isSavePickerDisabled();
+    const hasSavePicker = canUseSavePicker();
     let shouldFallbackToAnchorDownload = !hasSavePicker;
     if (hasSavePicker) {
       try {
@@ -6678,7 +7563,7 @@
 
   async function renderAppliedPathResult(path) {
     if (!mappingPanelsGrid) return;
-    const segments = Array.isArray(path?.segments) ? path.segments : [];
+    const segments = getPathSegments(path);
     if (!segments.length) {
       renderEmptyPathResult();
       return;
@@ -6708,6 +7593,7 @@
   }
 
   async function runPathSearch() {
+    const searchStart = performance.now();
     if (PATH_MAPPING_REBUILD_MODE) {
       activePathSearchResult = null;
       selectedPathCandidateId = "";
@@ -6771,8 +7657,9 @@
     try {
       const loadingText = hasTranId ? "正在按转换 ID 查询路径..." : "正在查询候选路径...";
       const result = await withAppLoading(loadingText, async () => fetchPathSelection(source, sourcesys, target, tranId));
+      
       activePathSearchResult = result;
-      const items = Array.isArray(result?.candidate_paths) ? result.candidate_paths : [];
+      const items = getPathCandidatePaths(result);
       renderPathCandidates();
       renderPathSelectionSummaryState();
       if (items.length) {
@@ -6780,6 +7667,7 @@
       } else {
         showToast("当前条件下未找到可选路径。", "error");
       }
+      
     } catch (error) {
       const rawMsg = String(error?.message || "").trim();
       activePathSearchResult = null;
@@ -6884,7 +7772,7 @@
           if (autoCollapsePathSelection) {
             setPathSelectionCollapsed(true);
           }
-          showToast(`已加载 Path ${selectedPath.index}，共 ${formatCount(selectedPath.segment_count || 0)} 段。`);
+          showToast(`已加载 Path ${selectedPath.index}，共 ${formatCount(selectedPath.SEGMENT_COUNT || 0)} 段。`);
         } catch (error) {
           const rawMsg = String(error?.message || "").trim();
           renderEmptyPathResult("当前路径字段映射加载失败。");
@@ -6965,6 +7853,14 @@
             }
           }
           // Text columns are dynamically inserted/removed. Skip restoring stale column order once.
+          skipAgGridStateRestoreOnce = true;
+          renderAlignedPathMapping(activePathMappingResult);
+          return;
+        }
+
+        const infoToggle = event.target.closest("[data-field-info-toggle]");
+        if (infoToggle && activePathMappingResult) {
+          setFieldInfoVisible(Boolean(event.target.checked));
           skipAgGridStateRestoreOnce = true;
           renderAlignedPathMapping(activePathMappingResult);
           return;
@@ -7915,7 +8811,7 @@
         }
         try {
           await writeTextToClipboard(rawContent);
-          showToast(`已复制${formatLogicKindLabel(activeEntry?.kind)}原值。`);
+          showToast(`已复制${formatLogicKindLabel(activeEntry?.KIND || activeEntry?.kind)}原值。`);
         } catch (error) {
           const rawMsg = String(error?.message || "").trim();
           showToast(`复制失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");

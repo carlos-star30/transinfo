@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import datetime
 import http.server
+import importlib
+import json
 import mimetypes
 import os
+import re
 import ssl
 import socketserver
+import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -13,9 +19,12 @@ from pathlib import Path
 
 FRONTEND_DIR = Path(__file__).resolve().parent
 WORKSPACE_DIR = FRONTEND_DIR.parent
+if str(WORKSPACE_DIR) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_DIR))
 BACKEND_BASE = os.environ.get("DATAFLOW_BACKEND_BASE", "http://127.0.0.1:8000").rstrip("/")
 HOST = os.environ.get("DATAFLOW_DEV_HOST", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.environ.get("DATAFLOW_DEV_PORT", "8088"))
+BACKEND_TIMEOUT_SEC = int(os.environ.get("DATAFLOW_BACKEND_TIMEOUT_SEC", "600"))
 STATIC_CACHEABLE_SUFFIXES = {
     ".css",
     ".js",
@@ -52,19 +61,12 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             runtime_override = (
                 '<script>window.__DATAFLOW_API_BASE__ = window.location.origin; '
                 'window.__DATAFLOW_APP_TITLE__ = "转换映射查询"; '
-                'window.__DATAFLOW_APP_VERSION__ = "1.0.0";</script>'
+                'window.__DATAFLOW_APP_VERSION__ = "2.0.0";</script>'
             )
-            html = html.replace(
-                '<script src="./runtime-config.js?v=20260319-v1.6.20"></script>',
-                runtime_override,
-            )
-            html = html.replace(
-                '<script src="./runtime-config.js?v=20260314-mapfix18"></script>',
-                runtime_override,
-            )
-            html = html.replace("./app.js?v=20260319-v1.6.20", f"./app.js")
-            html = html.replace("./styles.css?v=20260319-v1.6.20", f"./styles.css")
-            html = html.replace("./mock-data.js?v=20260319-v1.6.20", f"./mock-data.js")
+            html = re.sub(r'<script\s+src="\./runtime-config\.js(?:\?[^\"]*)?"></script>', runtime_override, html)
+            html = re.sub(r'\.\/app\.js\?[^\"\']+', "./app.js", html)
+            html = re.sub(r'\.\/styles\.css\?[^\"\']+', "./styles.css", html)
+            html = re.sub(r'\.\/mock-data\.js\?[^\"\']+', "./mock-data.js", html)
             body = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -83,7 +85,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             body = (
                 'window.__DATAFLOW_API_BASE__ = window.location.origin;\n'
                 'window.__DATAFLOW_APP_TITLE__ = "转换映射查询";\n'
-                'window.__DATAFLOW_APP_VERSION__ = "1.0.0";\n'
+                'window.__DATAFLOW_APP_VERSION__ = "2.0.0";\n'
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/javascript; charset=utf-8")
@@ -129,6 +131,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
         if request_path.startswith("/api/") or request_path in {"/", "/index.html", "/runtime-config.js"}:
             cache_control = "no-store"
+        elif suffix in {".css", ".js", ".mjs", ".html"}:
+            cache_control = "no-store"
         elif suffix in STATIC_CACHEABLE_SUFFIXES:
             cache_control = "public, max-age=31536000, immutable" if parsed.query else "public, max-age=3600"
         else:
@@ -158,12 +162,81 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(payload)
         return True
 
+    def _handle_local_mapping_patch_api(self, body: bytes | None) -> bool:
+        parsed = urllib.parse.urlparse(self.path)
+        if self.command != "POST" or parsed.path not in {"/api/path-selection/mapping", "/api/path-selection/text", "/api/path-selection/logic"}:
+            return False
+
+        try:
+            payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+        except json.JSONDecodeError as exc:
+            error_payload = json.dumps({"detail": f"Invalid JSON: {exc.msg}"}, ensure_ascii=False).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", f"http://localhost:{PORT}")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Content-Length", str(len(error_payload)))
+            self.end_headers()
+            self.wfile.write(error_payload)
+            return True
+
+        os.environ.setdefault("DB_DRIVER", "sqlite")
+        os.environ.setdefault("SQLITE_DB_PATH", str(WORKSPACE_DIR / "backend" / "data" / "trans_fields_mapping.db"))
+
+        try:
+            backend_module = importlib.import_module("backend.import_status_api")
+            backend_module = importlib.reload(backend_module)
+
+            PathSegmentRequest = backend_module.PathSegmentRequest
+            build_path_logic_payload = backend_module.build_path_logic_payload
+            build_path_mapping_payload = backend_module.build_path_mapping_payload
+            build_path_text_payload = backend_module.build_path_text_payload
+
+            raw_segments = payload.get("segments") or []
+            segments = [PathSegmentRequest(**segment) for segment in raw_segments if isinstance(segment, dict)]
+            if parsed.path.endswith("/logic"):
+                response_obj = build_path_logic_payload(segments)
+            elif parsed.path.endswith("/text"):
+                response_obj = build_path_text_payload(segments)
+            else:
+                response_obj = build_path_mapping_payload(
+                    segments,
+                    include_logic=bool(payload.get("include_logic")),
+                    include_text=bool(payload.get("include_text")),
+                )
+            response_payload = json.dumps(response_obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", f"http://localhost:{PORT}")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Content-Length", str(len(response_payload)))
+            self.end_headers()
+            self.wfile.write(response_payload)
+            return True
+        except Exception as exc:  # pragma: no cover - local helper path
+            error_payload = json.dumps({"detail": str(exc)}, ensure_ascii=False).encode("utf-8")
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", f"http://localhost:{PORT}")
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Content-Length", str(len(error_payload)))
+            self.end_headers()
+            self.wfile.write(error_payload)
+            return True
+
     def _proxy_request(self):
-        target_url = f"{BACKEND_BASE}{self.path}"
+        start_time = time.time()
+        timestamp = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        
         body = None
         content_length = int(self.headers.get("Content-Length", "0") or "0")
         if content_length > 0:
             body = self.rfile.read(content_length)
+
+        if self._handle_local_mapping_patch_api(body):
+            return
+
+        target_url = f"{BACKEND_BASE}{self.path}"
 
         req = urllib.request.Request(target_url, data=body, method=self.command)
 
@@ -177,18 +250,20 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
 
         def open_backend(request: urllib.request.Request):
             try:
-                return urllib.request.urlopen(request, timeout=60)
+                return urllib.request.urlopen(request, timeout=BACKEND_TIMEOUT_SEC)
             except urllib.error.URLError as exc:
                 reason = getattr(exc, "reason", None)
                 if isinstance(reason, ssl.SSLCertVerificationError):
                     # Local macOS Python may miss CA chain; fallback for dev proxy only.
                     insecure_ctx = ssl._create_unverified_context()
-                    return urllib.request.urlopen(request, timeout=60, context=insecure_ctx)
+                    return urllib.request.urlopen(request, timeout=BACKEND_TIMEOUT_SEC, context=insecure_ctx)
                 raise
 
         try:
             with open_backend(req) as resp:
                 payload = resp.read()
+                elapsed = time.time() - start_time
+                print(f"[PROXY PERF] {timestamp} {self.command} {self.path} -> {resp.status} ({elapsed*1000:.1f}ms)")
                 self.send_response(resp.status)
                 for key, value in resp.headers.items():
                     lower = key.lower()
@@ -207,6 +282,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(payload)
         except urllib.error.HTTPError as exc:
             payload = exc.read()
+            elapsed = time.time() - start_time
+            print(f"[PROXY PERF] {timestamp} {self.command} {self.path} -> {exc.code} ({elapsed*1000:.1f}ms)")
             self.send_response(exc.code)
             for key, value in exc.headers.items():
                 lower = key.lower()
@@ -223,6 +300,8 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(payload)
         except Exception as exc:  # pragma: no cover - local helper path
             payload = str(exc).encode("utf-8")
+            elapsed = time.time() - start_time
+            print(f"[PROXY PERF] {timestamp} {self.command} {self.path} -> ERROR ({elapsed*1000:.1f}ms): {exc}")
             self.send_response(502)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Access-Control-Allow-Origin", f"http://localhost:{PORT}")
@@ -247,4 +326,5 @@ if __name__ == "__main__":
     with ThreadingTCPServer((HOST, PORT), ProxyHandler) as httpd:
         print(f"Serving local frontend proxy at http://{HOST}:{PORT}")
         print(f"Proxying /api to {BACKEND_BASE}")
+        print(f"Backend request timeout: {BACKEND_TIMEOUT_SEC}s")
         httpd.serve_forever()

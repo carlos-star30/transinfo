@@ -3,5 +3,5 @@
 // Leave empty to use URL query/localStorage/default host resolution in app.js.
 window.__DATAFLOW_API_BASE__ = "https://transinfo.onrender.com";
 window.__DATAFLOW_APP_TITLE__ = "转换映射查询";
-window.__DATAFLOW_APP_VERSION__ = "1.0.0";
+window.__DATAFLOW_APP_VERSION__ = "2.0.0";
 

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: example-business-app-api
+    name: transinfo-api
     runtime: docker
     plan: free
     dockerContext: .
@@ -17,7 +17,7 @@ services:
       - key: DB_PASSWORD
         sync: false
       - key: DB_NAME
-        value: trans_fields_mapping
+        sync: false
       - key: DB_SSL_CA
         value: /etc/ssl/certs/ca-certificates.crt
       - key: DB_SSL_DISABLED
@@ -33,9 +33,9 @@ services:
       - key: CORS_ALLOW_ORIGINS
         sync: false
       - key: CORS_ALLOW_ORIGIN_REGEX
-        value: ""
+        sync: false
       - key: AUTH_COOKIE_NAME
-        value: trans_fields_mapping_session
+        value: transinfo_session
       - key: AUTH_COOKIE_SECURE
         value: "true"
       - key: AUTH_COOKIE_SAMESITE

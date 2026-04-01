@@ -8,7 +8,7 @@ This directory is an example app created from the reusable full-stack starter.
 - `backend/`: Python API service skeleton and import/status endpoints
 - `scripts/`: table creation, health check, local run and deploy helpers
 - `Table-Template/`: Excel table definition templates used by startup scripts
-- `docs/`: deployment guides for Netlify + Railway + TiDB
+- `docs/`: deployment guides and environment checklists
 - root deploy files: `Dockerfile`, `docker-compose.yml`, `netlify.toml`, `render.yaml`, `.env.example`
 
 ## This Demo Shows
@@ -27,3 +27,18 @@ This directory is an example app created from the reusable full-stack starter.
 ## Local Startup
 
 - Use `LOCAL_STARTUP.md` for the fixed local startup flow (frontend `8088` + backend `8000`) and troubleshooting steps.
+- Use `SQLITE_LOCAL_STARTUP.md` for the current Windows SQLite local startup path.
+- Use `docs/path-selection-logic-and-table-relations.md` when troubleshooting path search, mapping assembly, diagnostics, or export behavior.
+
+## Environment Commands
+
+- Say `启动本地项目` when you want local frontend + local backend + local SQLite.
+- Say `检查线上项目` when you want read-only checks against the deployed environment.
+- Do not use `启动项目` alone, because it is ambiguous for this repository.
+
+## Production Deployment
+
+- Current recommended production path: Netlify + Render + TiDB.
+- Canonical deployment guide: `DEPLOY_PLAN_B.md`.
+- Render environment checklist: `RENDER_ENV_PRODUCTION.md`.
+- Release note for current major version: `RELEASE_v2.0.0.md`.

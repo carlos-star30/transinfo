@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>转换映射查询</title>
-  <link rel="stylesheet" href="./styles.css?v=20260330-v1.6.63" />
+  <link rel="stylesheet" href="./styles.css?v=20260402-v2.0.0" />
   <link rel="stylesheet" href="./vendor/ag-grid/ag-grid.css?v=32.3.3" />
   <link rel="stylesheet" href="./vendor/ag-grid/ag-theme-quartz.css?v=32.3.3" />
   <link rel="stylesheet" href="./vendor/highlightjs/github-dark.min.css?v=11.11.1" />
@@ -52,7 +52,7 @@
           </svg>
         </span>
         <span id="appTitleText">转换映射查询</span>
-        <span id="appVersionBadge" class="app-version-badge">v1.0.0</span>
+        <span id="appVersionBadge" class="app-version-badge">v2.0.0</span>
       </h1>
       <div class="topbar-actions">
         <div class="mode-switch" role="tablist" aria-label="Main mode switch">
@@ -301,6 +301,11 @@
                   <span class="import-card-title">转换</span>
                   <span class="import-card-sub">RSTRAN｜Transformation 主表，路径搜索起点</span>
                   <span class="import-card-time">更新时间：<span id="importRstranTime">--</span> | 数据条目：<span id="importRstranCount">0</span></span>
+                </button>
+                <button id="importRstrantCard" class="import-card glass-panel" type="button" data-table="rstrant" data-title="转换名称（RSTRANT)">
+                  <span class="import-card-title">转换名称</span>
+                  <span class="import-card-sub">RSTRANT｜Transformation 文本；字段元数据取 DD03L，字段文本取 DD03T，表名文本取 DD02T</span>
+                  <span class="import-card-time">更新时间：<span id="importRstrantTime">--</span> | 数据条目：<span id="importRstrantCount">0</span></span>
                 </button>
                 <button id="importRstranruleCard" class="import-card glass-panel" type="button" data-table="rstranrule" data-title="转换-字段映射规则（RSTRANRULE)">
                   <span class="import-card-title">转换-字段映射规则</span>
@@ -670,11 +675,11 @@
     </div>
   </div>
 
-  <script src="./mock-data.js?v=20260324-v1.6.34"></script>
-  <script src="./runtime-config.js?v=20260324-v1.6.34"></script>
+  <script src="./mock-data.js?v=20260402-v2.0.0"></script>
+  <script src="./runtime-config.js?v=20260402-v2.0.0"></script>
   <script src="./vendor/table-analysis-ui-kit/table-analysis-ui-kit.js"></script>
   <script src="./vendor/ag-grid/ag-grid-community.min.js?v=32.3.3"></script>
   <script src="./vendor/highlightjs/common.min.js?v=11.11.1"></script>
-  <script src="./app.js?v=20260330-v1.6.60"></script>
+  <script src="./app.js?v=20260402-v2.0.0"></script>
 </body>
 </html>

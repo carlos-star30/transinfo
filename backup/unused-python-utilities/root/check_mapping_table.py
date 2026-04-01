@@ -1,0 +1,12 @@
+import sqlite3
+
+conn = sqlite3.connect('backend/data/trans_fields_mapping.db')
+cur = conn.cursor()
+
+print("=== rstran_mapping_rule_full table columns ===")
+cur.execute("PRAGMA table_info(rstran_mapping_rule_full)")
+columns = cur.fetchall()
+for col in columns:
+    print(f"  {col[1]} ({col[2]})")
+
+conn.close()
