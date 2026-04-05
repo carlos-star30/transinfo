@@ -1219,15 +1219,69 @@
 
   function parseErrorText(text, fallback) {
     let message = text || fallback;
+
+    function formatErrorDetail(detail) {
+      if (detail == null) return "";
+      if (typeof detail === "string") return detail.trim();
+      if (typeof detail === "number" || typeof detail === "boolean") {
+        return String(detail);
+      }
+      if (Array.isArray(detail)) {
+        return detail.map((item) => formatErrorDetail(item)).filter(Boolean).join("；");
+      }
+      if (typeof detail === "object") {
+        const parts = [];
+        const primary = formatErrorDetail(detail.message || detail.detail || detail.error || "");
+        if (primary) parts.push(primary);
+        if (detail.code) parts.push(`code=${String(detail.code).trim()}`);
+        if (Array.isArray(detail.missing_tables) && detail.missing_tables.length) {
+          parts.push(`缺少表: ${detail.missing_tables.join(", ")}`);
+        }
+        if (Array.isArray(detail.empty_tables) && detail.empty_tables.length) {
+          parts.push(`空表: ${detail.empty_tables.join(", ")}`);
+        }
+        if (Array.isArray(detail.required_actions) && detail.required_actions.length) {
+          parts.push(`建议操作: ${detail.required_actions.join(" , ")}`);
+        }
+        if (parts.length) {
+          return parts.join("；");
+        }
+        try {
+          return JSON.stringify(detail);
+        } catch {
+          return String(detail);
+        }
+      }
+      return String(detail);
+    }
+
     try {
       const parsed = JSON.parse(text);
-      if (parsed?.detail) {
-        message = String(parsed.detail);
+      if (parsed?.detail != null) {
+        message = formatErrorDetail(parsed.detail) || fallback;
+      } else if (parsed?.message != null || parsed?.error != null) {
+        message = formatErrorDetail(parsed.message || parsed.error) || fallback;
       }
     } catch {
       // Keep raw text if response is not JSON.
     }
-    return message;
+    return String(message || fallback || "请求失败").trim();
+  }
+
+  function getErrorMessage(error, fallback = "") {
+    if (typeof error === "string") {
+      return error.trim() || fallback;
+    }
+    if (typeof error?.message === "string") {
+      return error.message.trim() || fallback;
+    }
+    if (error?.message != null) {
+      return parseErrorText(JSON.stringify({ detail: error.message }), fallback);
+    }
+    if (error != null && typeof error === "object") {
+      return parseErrorText(JSON.stringify({ detail: error }), fallback);
+    }
+    return fallback;
   }
 
   function isUnauthorizedError(error) {
@@ -9030,7 +9084,7 @@
           }
           showToast(`已加载 Path ${selectedPath.index}，共 ${formatCount(selectedPath.SEGMENT_COUNT || 0)} 段。`);
         } catch (error) {
-          const rawMsg = String(error?.message || "").trim();
+          const rawMsg = getErrorMessage(error);
           renderEmptyPathResult("当前路径字段映射加载失败。");
           showToast(`字段映射加载失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
         }
