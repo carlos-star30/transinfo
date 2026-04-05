@@ -422,6 +422,19 @@ body:not(.flow-only) .layout.centered {
   padding-bottom: 0;
 }
 
+.prog-code-import-actions .glass-btn,
+.database-query-top-actions .glass-btn,
+.database-query-filter-actions .glass-btn,
+.database-query-join-condition-actions .glass-btn,
+.database-query-select-fields-actions .glass-btn,
+.database-query-result-actions .glass-btn,
+.database-query-filter-toolbar .glass-btn {
+  min-height: var(--action-btn-height);
+  height: var(--action-btn-height);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 .path-selection-stage {
   display: block;
   margin-top: 10px;
@@ -548,11 +561,47 @@ body:not(.flow-only) .layout.centered {
 
 .database-query-top-actions .glass-btn,
 .database-query-filter-actions .glass-btn,
+.database-query-join-condition-actions .glass-btn,
+.database-query-select-fields-actions .glass-btn,
+.database-query-result-actions .glass-btn,
+.database-query-filter-toolbar .glass-btn,
+.database-query-filter-remove,
+.database-query-join-condition-row .glass-btn {
+  min-height: var(--action-btn-height);
+  height: var(--action-btn-height);
+  padding: 0 var(--action-btn-padding-x);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.database-query-top-actions .glass-btn:not(.panel-collapse-btn),
+.database-query-filter-actions .glass-btn,
+.database-query-join-condition-actions .glass-btn,
+.database-query-select-fields-actions .glass-btn:not(.panel-collapse-btn),
+.database-query-result-actions .glass-btn,
+.database-query-filter-toolbar .glass-btn,
+.database-query-filter-remove,
+.database-query-join-condition-row .glass-btn {
+  border-color: var(--action-btn-border);
+  background: var(--action-btn-bg);
+}
+
+.database-query-top-actions .glass-btn:not(.panel-collapse-btn):hover,
+.database-query-filter-actions .glass-btn:hover,
+.database-query-join-condition-actions .glass-btn:hover,
+.database-query-select-fields-actions .glass-btn:not(.panel-collapse-btn):hover,
+.database-query-result-actions .glass-btn:hover,
+.database-query-filter-toolbar .glass-btn:hover,
+.database-query-filter-remove:hover,
+.database-query-join-condition-row .glass-btn:hover {
+  background: var(--action-btn-bg-hover);
+}
+
+.database-query-top-actions .glass-btn,
+.database-query-filter-actions .glass-btn,
 .database-query-join-condition-actions .glass-btn {
-  min-height: 26px;
-  height: 26px;
-  padding: 0 10px;
-  font-size: 11px;
+  padding: 0 12px;
+  font-size: 12px;
 }
 
 .database-query-form-grid {
@@ -578,6 +627,16 @@ body:not(.flow-only) .layout.centered {
 .database-query-field span {
   font-size: 12px;
   color: var(--text-soft);
+}
+
+.database-query-field .glass-input,
+.database-query-join-condition-row .glass-input,
+.database-query-filter-row .glass-input {
+  height: var(--action-btn-height);
+  min-height: var(--action-btn-height);
+  padding: 0 var(--action-btn-padding-x);
+  font-size: 12px;
+  line-height: 1;
 }
 
 .database-query-select-fields-head {
@@ -694,16 +753,9 @@ body:not(.flow-only) .layout.centered {
   align-items: center;
 }
 
-.database-query-join-condition-row .glass-input {
-  height: 30px;
-  padding: 0 8px;
-  font-size: 11px;
-}
-
 .database-query-join-condition-row .glass-btn.tiny {
-  min-height: 30px;
-  padding: 0 10px;
-  font-size: 11px;
+  padding: 0 12px;
+  font-size: 12px;
 }
 
 .database-query-join-condition-equals {
@@ -754,12 +806,6 @@ body:not(.flow-only) .layout.centered {
   background: rgba(13, 24, 42, 0.24);
 }
 
-.database-query-filter-row .glass-input {
-  height: 30px;
-  padding: 0 8px;
-  font-size: 11px;
-}
-
 .database-query-filter-select-pair {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px;
@@ -775,9 +821,8 @@ body:not(.flow-only) .layout.centered {
 }
 
 .database-query-filter-row .glass-btn.tiny {
-  min-height: 30px;
-  padding: 0 10px;
-  font-size: 11px;
+  padding: 0 12px;
+  font-size: 12px;
 }
 
 .database-query-filter-row.is-empty {
@@ -1670,6 +1715,16 @@ body.data-query-panel-maximized::after {
   color: rgba(210, 222, 241, 0.88);
 }
 
+.mapping-step-header-tran-block {
+  align-items: center;
+}
+
+.mapping-step-tran-lines {
+  display: grid;
+  gap: 4px;
+  max-width: 100%;
+}
+
 .mapping-step-header-subline {
   width: 100%;
 }
@@ -2510,6 +2565,10 @@ body.data-query-panel-maximized::after {
   margin: 0;
 }
 
+.prog-code-workspace-section {
+  margin: 0;
+}
+
 .import-home-section h2 {
   margin: 0 0 10px;
   font-size: 20px;
@@ -2520,6 +2579,40 @@ body.data-query-panel-maximized::after {
   color: var(--text-soft);
   font-size: 13px;
   max-width: 760px;
+}
+
+.import-subtab-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.import-subtab-btn {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(161, 186, 220, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(214, 226, 244, 0.82);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.import-subtab-btn:hover {
+  transform: translateY(-1px);
+}
+
+.import-subtab-btn.is-active {
+  border-color: rgba(116, 226, 188, 0.42);
+  background: linear-gradient(180deg, rgba(72, 191, 147, 0.16), rgba(12, 40, 32, 0.2));
+  color: #effff8;
+}
+
+.import-subpanel.hidden {
+  display: none;
 }
 
 .import-workbench {
@@ -2560,6 +2653,22 @@ body.data-query-panel-maximized::after {
   background: rgba(17, 16, 14, 0.46);
   border: 1px solid rgba(191, 166, 122, 0.16);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.import-function-zone-process.is-collapsed {
+  padding-bottom: 14px;
+}
+
+.import-function-zone-process.is-collapsed .import-function-head-side {
+  margin-bottom: 0;
+}
+
+.import-process-body {
+  display: grid;
+}
+
+.import-process-body.hidden {
+  display: none;
 }
 
 .import-function-head {
@@ -2859,12 +2968,663 @@ body.data-query-panel-maximized::after {
   box-shadow: none;
 }
 
+.prog-code-import-shell {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(15, 25, 39, 0.46), rgba(9, 17, 28, 0.58));
+  border: 1px solid rgba(140, 171, 209, 0.16);
+}
+
+.prog-code-import-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.prog-code-import-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.prog-code-import-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(168, 189, 216, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(216, 228, 244, 0.84);
+  font-size: 12px;
+}
+
+.prog-code-import-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.prog-code-form-field {
+  display: grid;
+  gap: 8px;
+}
+
+.prog-code-form-field > span {
+  color: rgba(218, 229, 244, 0.92);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.prog-code-form-field-wide {
+  grid-column: 1 / -1;
+}
+
+.prog-code-editor-field {
+  align-content: start;
+}
+
+.prog-code-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.prog-code-textarea {
+  min-height: 360px;
+  resize: vertical;
+  overflow: auto;
+  white-space: pre;
+  font-family: Consolas, "Cascadia Code", "SFMono-Regular", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.prog-code-editor-field .abap-sql-ace-editor {
+  min-height: 360px;
+}
+
+.prog-code-import-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.prog-code-import-meta {
+  color: rgba(191, 208, 232, 0.8);
+  font-size: 12px;
+}
+
+.prog-code-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.prog-code-import-actions-inline {
+  margin-left: auto;
+}
+
+.prog-code-import-shell.is-maximized {
+  position: fixed;
+  inset: 12px;
+  z-index: 28;
+  margin: 0;
+  border-radius: 24px;
+  max-width: none;
+  max-height: none;
+  width: auto;
+  height: auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.prog-code-import-shell.is-maximized .prog-code-import-head,
+.prog-code-import-shell.is-maximized .prog-code-import-footer,
+.prog-code-import-shell.is-maximized .prog-code-import-form-grid > .prog-code-form-field:not(.prog-code-editor-field) {
+  display: none;
+}
+
+.prog-code-import-shell.is-maximized .prog-code-import-form-grid {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.prog-code-import-shell.is-maximized .prog-code-editor-field {
+  min-height: 100%;
+}
+
+.prog-code-import-shell.is-maximized .prog-code-editor-head {
+  margin-bottom: 10px;
+}
+
+body.prog-code-panel-maximized {
+  overflow: hidden;
+}
+
+body.prog-code-panel-maximized::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 27;
+  background: rgba(5, 8, 15, 0.48);
+  backdrop-filter: blur(8px);
+}
+
+.prog-code-panel-maximized .prog-code-import-shell.is-maximized .prog-code-textarea {
+  min-height: calc(100vh - 240px);
+}
+
+.prog-code-panel-maximized .prog-code-import-shell.is-maximized .prog-code-editor-field .abap-sql-ace-editor {
+  min-height: calc(100vh - 240px);
+}
+
+.prog-code-search-shell {
+  width: min(760px, 94vw);
+  height: min(74vh, 620px);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.prog-code-search-meta {
+  color: rgba(193, 208, 232, 0.82);
+  font-size: 13px;
+}
+
+.prog-code-search-list-wrap {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.prog-code-search-list {
+  display: grid;
+  gap: 10px;
+  max-height: 100%;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.prog-code-search-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(159, 190, 227, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(229, 238, 251, 0.94);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.prog-code-search-item:hover,
+.prog-code-search-item:focus-visible {
+  border-color: rgba(131, 194, 255, 0.46);
+  background: rgba(117, 177, 238, 0.14);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.prog-code-search-item-main {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f1f7ff;
+  overflow-wrap: anywhere;
+}
+
+.prog-code-search-item-side {
+  color: rgba(196, 212, 234, 0.82);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.prog-code-search-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  border-radius: 14px;
+  border: 1px dashed rgba(159, 190, 227, 0.2);
+  color: rgba(196, 212, 234, 0.76);
+}
+
+.abap-sql-shell {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top left, rgba(92, 161, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(15, 25, 39, 0.5), rgba(8, 15, 26, 0.62));
+  border: 1px solid rgba(140, 171, 209, 0.16);
+}
+
+.abap-sql-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.abap-sql-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.abap-sql-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(168, 189, 216, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(216, 228, 244, 0.84);
+  font-size: 12px;
+}
+
+.abap-sql-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.abap-sql-result-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.abap-sql-result-grid .abap-sql-card {
+  align-content: start;
+}
+
+.abap-sql-result-grid .abap-sql-card-head {
+  min-height: 58px;
+}
+
+.abap-sql-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(162, 193, 224, 0.14);
+  background:
+    linear-gradient(180deg, rgba(64, 84, 115, 0.12), rgba(10, 18, 30, 0.18)),
+    rgba(255, 255, 255, 0.025);
+}
+
+.abap-sql-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.abap-sql-card-head h3 {
+  margin: 0;
+}
+
+.abap-sql-card-head p {
+  margin: 4px 0 0;
+  color: rgba(188, 204, 228, 0.8);
+  font-size: 12px;
+}
+
+.abap-sql-card-head-stack {
+  align-items: stretch;
+}
+
+.abap-sql-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.abap-sql-form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.abap-sql-target-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.abap-sql-target-field {
+  width: min(360px, 100%);
+}
+
+.abap-sql-input-actions {
+  padding-top: 2px;
+  border-top: 1px solid rgba(153, 177, 207, 0.12);
+}
+
+.abap-sql-input-textarea {
+  min-height: 280px;
+}
+
+.abap-sql-ace-editor {
+  width: 100%;
+  min-height: 280px;
+  height: 100%;
+  border-radius: 18px;
+  border: 1px solid rgba(153, 177, 207, 0.14);
+  background:
+    linear-gradient(180deg, rgba(18, 28, 47, 0.58), rgba(10, 17, 28, 0.72)),
+    rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+}
+
+.abap-sql-input-textarea[hidden],
+.abap-sql-output-textarea[hidden] {
+  display: none;
+}
+
+.abap-sql-location-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  gap: 14px;
+}
+
+.abap-sql-location-result {
+  min-height: 148px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(188, 210, 235, 0.08);
+  background: transparent;
+  box-shadow: none;
+  color: rgba(227, 236, 248, 0.88);
+  font-size: 13px;
+  line-height: 1.7;
+  display: grid;
+  gap: 14px;
+}
+
+.abap-sql-location-empty {
+  color: rgba(227, 236, 248, 0.72);
+  min-height: 116px;
+  display: flex;
+  align-items: center;
+}
+
+.abap-sql-location-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.abap-sql-location-metric {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(188, 210, 235, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.abap-sql-location-metric.is-success {
+  background: rgba(78, 176, 108, 0.26);
+  border-color: rgba(114, 220, 148, 0.42);
+}
+
+.abap-sql-location-metric.is-danger {
+  background: rgba(214, 88, 88, 0.26);
+  border-color: rgba(244, 136, 136, 0.42);
+}
+
+.abap-sql-location-metric-label {
+  color: rgba(198, 213, 234, 0.78);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.abap-sql-location-metric-value {
+  color: rgba(240, 246, 255, 0.96);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.abap-sql-location-sections {
+  display: grid;
+  gap: 10px;
+}
+
+.abap-sql-location-section {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(188, 210, 235, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.abap-sql-location-section.is-success {
+  background: rgba(78, 176, 108, 0.18);
+  border-color: rgba(114, 220, 148, 0.32);
+}
+
+.abap-sql-location-section.is-danger {
+  background: rgba(214, 88, 88, 0.18);
+  border-color: rgba(244, 136, 136, 0.34);
+}
+
+.abap-sql-location-section h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: rgba(240, 246, 255, 0.94);
+}
+
+.abap-sql-location-section ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.abap-sql-location-section li {
+  color: rgba(227, 236, 248, 0.84);
+  word-break: break-word;
+}
+
+.abap-sql-location-section li + li {
+  margin-top: 6px;
+}
+
+.abap-sql-output-head {
+  margin-top: 2px;
+}
+
+.abap-sql-output-textarea {
+  min-height: 360px;
+}
+
+.abap-sql-output-card .abap-sql-ace-editor {
+  min-height: 360px;
+}
+
+.abap-sql-output-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  gap: 14px;
+}
+
+#abapSqlInputCard.is-maximized,
+#abapSqlOutputCard.is-maximized {
+  position: fixed;
+  inset: 16px;
+  z-index: 1400;
+  margin: 0;
+  padding: 18px;
+  border-radius: 24px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(30, 45, 69, 0.96), rgba(18, 29, 47, 0.97));
+  box-shadow: 0 28px 90px rgba(3, 10, 22, 0.56);
+}
+
+#abapSqlInputCard.is-maximized {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  border-color: rgba(132, 183, 232, 0.28);
+  background:
+    radial-gradient(circle at top left, rgba(102, 164, 247, 0.2), transparent 36%),
+    linear-gradient(135deg, rgba(52, 78, 118, 0.97), rgba(31, 57, 92, 0.95) 52%, rgba(23, 64, 90, 0.96));
+}
+
+#abapSqlOutputCard.is-maximized {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border-color: rgba(132, 183, 232, 0.28);
+  background:
+    radial-gradient(circle at top right, rgba(90, 156, 244, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(50, 74, 112, 0.97), rgba(29, 53, 86, 0.95) 54%, rgba(20, 45, 73, 0.96));
+}
+
+#abapSqlInputCard.is-maximized .abap-sql-form-grid,
+#abapSqlOutputCard.is-maximized .abap-sql-form-grid {
+  min-height: 0;
+}
+
+#abapSqlInputCard.is-maximized .prog-code-form-field.prog-code-form-field-wide,
+#abapSqlOutputCard.is-maximized .abap-sql-ace-editor,
+#abapSqlOutputCard.is-maximized .abap-sql-output-textarea {
+  min-height: 0;
+  height: 100%;
+}
+
+body.abap-sql-input-maximized {
+  overflow: hidden;
+}
+
+body.abap-sql-input-maximized .abap-sql-shell.glass-panel,
+body.abap-sql-output-maximized .abap-sql-shell.glass-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+body.abap-sql-input-maximized::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1390;
+  background: rgba(5, 8, 15, 0.48);
+  backdrop-filter: blur(8px);
+}
+
+body.abap-sql-output-maximized {
+  overflow: hidden;
+}
+
+body.abap-sql-output-maximized::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1390;
+  background: rgba(5, 8, 15, 0.48);
+  backdrop-filter: blur(8px);
+}
+
+.abap-sql-output-maximized #abapSqlOutputCard.is-maximized .abap-sql-output-textarea,
+.abap-sql-output-maximized #abapSqlOutputCard.is-maximized .abap-sql-ace-editor {
+  min-height: calc(100vh - 240px);
+}
+
+.abap-sql-input-maximized #abapSqlInputCard.is-maximized .abap-sql-input-textarea,
+.abap-sql-input-maximized #abapSqlInputCard.is-maximized .abap-sql-ace-editor {
+  min-height: calc(100vh - 240px);
+}
+
+.abap-sql-output-actions {
+  padding-top: 2px;
+  border-top: 1px solid rgba(153, 177, 207, 0.12);
+}
+
+.import-flow-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0 16px;
+}
+
+.import-flow-step {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(162, 193, 224, 0.18);
+  background:
+    linear-gradient(180deg, rgba(106, 142, 187, 0.08), rgba(15, 27, 45, 0.16)),
+    rgba(255, 255, 255, 0.03);
+}
+
+.import-flow-step-build {
+  border-color: rgba(255, 201, 122, 0.24);
+  background:
+    linear-gradient(180deg, rgba(255, 188, 92, 0.1), rgba(47, 29, 8, 0.16)),
+    rgba(255, 255, 255, 0.03);
+}
+
+.import-flow-step-runtime {
+  border-color: rgba(107, 226, 184, 0.24);
+  background:
+    linear-gradient(180deg, rgba(73, 197, 147, 0.1), rgba(11, 42, 33, 0.16)),
+    rgba(255, 255, 255, 0.03);
+}
+
+.import-flow-step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(187, 208, 232, 0.24);
+  background: rgba(199, 216, 238, 0.12);
+  color: rgba(229, 240, 255, 0.92);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.import-flow-step strong {
+  font-size: 14px;
+  color: rgba(245, 250, 255, 0.96);
+}
+
+.import-flow-step span:last-child {
+  color: rgba(209, 221, 238, 0.82);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .import-card-action {
   background: inherit;
   border: inherit;
 }
 
 .import-card-action-process {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
   min-height: 104px;
   background: rgba(255, 188, 92, 0.06);
   border: 1px solid rgba(255, 198, 114, 0.18);
@@ -2879,10 +3639,143 @@ body.data-query-panel-maximized::after {
   color: rgba(243, 226, 194, 0.8);
 }
 
+.import-card-stage {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-bottom: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 216, 146, 0.24);
+  background: rgba(255, 205, 123, 0.12);
+  color: rgba(255, 238, 205, 0.92);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.import-card-dependency-summary {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 235, 199, 0.94);
+}
+
+.import-card-dependencies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.import-dependency-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(219, 204, 177, 0.16);
+  background: rgba(255, 244, 225, 0.05);
+  color: rgba(246, 232, 205, 0.88);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.import-dependency-pill-priority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.import-dependency-pill-priority.is-required {
+  background: rgba(255, 140, 120, 0.18);
+  color: #ffd9d0;
+}
+
+.import-dependency-pill-priority.is-optional {
+  background: rgba(255, 214, 140, 0.16);
+  color: #ffefc9;
+}
+
+.import-dependency-pill-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(250, 242, 228, 0.9);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.import-dependency-pill-name {
+  font-weight: 600;
+}
+
+.import-dependency-pill-state {
+  color: rgba(243, 223, 188, 0.78);
+}
+
+.import-dependency-pill.is-ready {
+  border-color: rgba(106, 225, 180, 0.3);
+  background: rgba(89, 212, 161, 0.11);
+  color: #e7fff5;
+}
+
+.import-dependency-pill.is-ready .import-dependency-pill-state {
+  color: rgba(221, 250, 236, 0.88);
+}
+
+.import-dependency-pill.is-missing {
+  border-color: rgba(255, 148, 126, 0.28);
+  background: rgba(121, 34, 27, 0.18);
+  color: #ffe5dc;
+}
+
+.import-dependency-pill.is-missing .import-dependency-pill-state {
+  color: rgba(255, 210, 198, 0.9);
+}
+
+.import-dependency-pill.is-optional-empty {
+  border-color: rgba(209, 187, 148, 0.22);
+  background: rgba(80, 57, 22, 0.14);
+  color: #fff1d7;
+}
+
+.import-card-runtime-note {
+  display: block;
+  margin-top: 10px;
+  color: rgba(255, 230, 184, 0.76);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.import-card-action-process.is-dependency-ready {
+  border-color: rgba(95, 222, 174, 0.28);
+}
+
+.import-card-action-process.is-dependency-warning {
+  border-color: rgba(255, 206, 128, 0.32);
+}
+
+.import-card-action-process.is-dependency-blocked {
+  border-color: rgba(255, 146, 120, 0.34);
+  box-shadow: inset 4px 0 0 rgba(255, 142, 117, 0.72);
+}
+
 .import-card-grid-process {
   display: flex;
   flex-wrap: nowrap;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: flex-start;
 }
 
@@ -3036,6 +3929,41 @@ body.data-query-panel-maximized::after {
 }
 
 @media (max-width: 1100px) {
+  .import-flow-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .prog-code-import-head,
+  .prog-code-import-footer,
+  .abap-sql-head,
+  .abap-sql-card-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .prog-code-import-status,
+  .prog-code-import-actions,
+  .abap-sql-status,
+  .abap-sql-card-actions {
+    justify-content: flex-start;
+  }
+
+  .prog-code-editor-head {
+    align-items: stretch;
+  }
+
+  .prog-code-import-actions-inline {
+    margin-left: 0;
+  }
+
+  .prog-code-search-item {
+    grid-template-columns: 1fr;
+  }
+
+  .prog-code-search-item-side {
+    white-space: normal;
+  }
+
   .import-card-grid-process .import-card {
     width: 100%;
     min-width: 0;
@@ -3093,6 +4021,27 @@ body.data-query-panel-maximized::after {
 
   .import-function-head {
     flex-direction: column;
+  }
+
+  .prog-code-import-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .abap-sql-input-textarea,
+  .abap-sql-output-textarea {
+    min-height: 280px;
+  }
+
+  .abap-sql-target-row {
+    display: block;
+  }
+
+  .abap-sql-target-field {
+    width: 100%;
+  }
+
+  .abap-sql-result-grid {
+    grid-template-columns: 1fr;
   }
 
   .path-form-row {
@@ -3408,83 +4357,124 @@ body.data-query-panel-maximized::after {
   height: 100%;
 }
 
-.logic-viewer-editor .ace_editor {
+.logic-viewer-editor .ace_editor,
+.abap-sql-ace-editor .ace_editor {
   font-family: "SF Mono", "Menlo", "Consolas", monospace;
   font-size: 13px;
   line-height: 1.72;
   background: transparent !important;
 }
 
-.logic-viewer-editor .ace_gutter {
+.logic-viewer-editor .ace_gutter,
+.abap-sql-ace-editor .ace_gutter {
   background: rgba(255, 255, 255, 0.04) !important;
   color: rgba(214, 226, 244, 0.6) !important;
 }
 
-.logic-viewer-editor .ace_print-margin {
+.logic-viewer-editor .ace_print-margin,
+.abap-sql-ace-editor .ace_print-margin {
   display: none;
 }
 
 .logic-viewer-editor .ace_marker-layer .ace_active-line,
-.logic-viewer-editor .ace_gutter-active-line {
+.logic-viewer-editor .ace_gutter-active-line,
+.abap-sql-ace-editor .ace_marker-layer .ace_active-line,
+.abap-sql-ace-editor .ace_gutter-active-line {
   background: rgba(255, 255, 255, 0.05) !important;
 }
 
-.logic-viewer-editor .ace_marker-layer .ace_selection {
+.logic-viewer-editor .ace_marker-layer .ace_selection,
+.abap-sql-ace-editor .ace_marker-layer .ace_selection {
   background: rgba(146, 186, 255, 0.18) !important;
 }
 
-.logic-viewer-editor .ace_fold {
+.logic-viewer-editor .ace_fold,
+.abap-sql-ace-editor .ace_fold {
   border-color: rgba(226, 240, 255, 0.82) !important;
 }
 
+.abap-sql-ace-editor .ace_invisible {
+  color: transparent !important;
+  opacity: 0 !important;
+}
+
+.abap-sql-ace-editor .ace_invalid,
+.abap-sql-ace-editor .ace_invalid.ace_illegal {
+  background: transparent !important;
+  color: #eef4ff !important;
+  border: 0 !important;
+}
+
 .logic-viewer-editor .ace_comment,
-.logic-viewer-editor .ace_comment.ace_doc {
+.logic-viewer-editor .ace_comment.ace_doc,
+.abap-sql-ace-editor .ace_comment,
+.abap-sql-ace-editor .ace_comment.ace_doc {
   color: rgba(132, 145, 164, 0.78) !important;
   font-style: normal;
 }
 
 .logic-viewer-editor .ace_keyword,
 .logic-viewer-editor .ace_storage,
-.logic-viewer-editor .ace_keyword.ace_operator {
+.logic-viewer-editor .ace_keyword.ace_operator,
+.abap-sql-ace-editor .ace_keyword,
+.abap-sql-ace-editor .ace_storage,
+.abap-sql-ace-editor .ace_keyword.ace_operator {
   color: #5f95d6 !important;
   font-weight: 600;
 }
 
-.logic-viewer-editor .ace_string {
+.logic-viewer-editor .ace_string,
+.abap-sql-ace-editor .ace_string {
   color: #84c97a !important;
 }
 
 .logic-viewer-editor .ace_constant.ace_numeric,
 .logic-viewer-editor .ace_constant.ace_language,
-.logic-viewer-editor .ace_variable.ace_parameter {
+.logic-viewer-editor .ace_variable.ace_parameter,
+.abap-sql-ace-editor .ace_constant.ace_numeric,
+.abap-sql-ace-editor .ace_constant.ace_language,
+.abap-sql-ace-editor .ace_variable.ace_parameter {
   color: #7cc4b8 !important;
 }
 
 .logic-viewer-editor .ace_constant.ace_character,
 .logic-viewer-editor .ace_constant.ace_character.ace_escape,
-.logic-viewer-editor .ace_constant.ace_string {
+.logic-viewer-editor .ace_constant.ace_string,
+.abap-sql-ace-editor .ace_constant.ace_character,
+.abap-sql-ace-editor .ace_constant.ace_character.ace_escape,
+.abap-sql-ace-editor .ace_constant.ace_string {
   color: #84c97a !important;
 }
 
 .logic-viewer-editor .ace_support.ace_type,
 .logic-viewer-editor .ace_storage.ace_type,
-.logic-viewer-editor .ace_support.ace_class {
+.logic-viewer-editor .ace_support.ace_class,
+.abap-sql-ace-editor .ace_support.ace_type,
+.abap-sql-ace-editor .ace_storage.ace_type,
+.abap-sql-ace-editor .ace_support.ace_class {
   color: #d7b56d !important;
 }
 
 .logic-viewer-editor .ace_entity.ace_name.ace_function,
-.logic-viewer-editor .ace_support.ace_function {
+.logic-viewer-editor .ace_support.ace_function,
+.abap-sql-ace-editor .ace_entity.ace_name.ace_function,
+.abap-sql-ace-editor .ace_support.ace_function {
   color: #d9e7ff !important;
 }
 
 .logic-viewer-editor .ace_paren,
 .logic-viewer-editor .ace_punctuation,
-.logic-viewer-editor .ace_keyword.ace_operator {
+.logic-viewer-editor .ace_keyword.ace_operator,
+.abap-sql-ace-editor .ace_paren,
+.abap-sql-ace-editor .ace_punctuation,
+.abap-sql-ace-editor .ace_keyword.ace_operator {
   color: #aab8ca !important;
 }
 
 .logic-viewer-editor .ace_variable,
-.logic-viewer-editor .ace_identifier {
+.logic-viewer-editor .ace_identifier,
+.abap-sql-ace-editor .ace_variable,
+.abap-sql-ace-editor .ace_identifier {
   color: #eef4ff !important;
 }
 
@@ -6494,6 +7484,17 @@ body.flow-only .flow-stage.glass-panel {
 
 .path-tranid-inputs .glass-btn:not(.tiny),
 .path-setting-actions .glass-btn:not(.tiny),
+.mapping-toolbar-actions .glass-btn,
+.prog-code-import-actions .glass-btn:not(.tiny),
+.abap-sql-card-actions .glass-btn:not(.tiny),
+.database-query-top-actions .glass-btn:not(.panel-collapse-btn),
+.database-query-filter-actions .glass-btn,
+.database-query-join-condition-actions .glass-btn,
+.database-query-select-fields-actions .glass-btn:not(.panel-collapse-btn),
+.database-query-result-actions .glass-btn,
+.database-query-filter-toolbar .glass-btn,
+.database-query-filter-remove,
+.database-query-join-condition-row .glass-btn,
 .import-tools .glass-btn:not(.tiny),
 .import-actions .glass-btn:not(.tiny),
 .login-actions .glass-btn:not(.tiny),
@@ -6510,6 +7511,17 @@ body.flow-only .flow-stage.glass-panel {
 
 .path-tranid-inputs .glass-btn:not(.tiny):hover,
 .path-setting-actions .glass-btn:not(.tiny):hover,
+.mapping-toolbar-actions .glass-btn:hover,
+.prog-code-import-actions .glass-btn:not(.tiny):hover,
+.abap-sql-card-actions .glass-btn:not(.tiny):hover,
+.database-query-top-actions .glass-btn:not(.panel-collapse-btn):hover,
+.database-query-filter-actions .glass-btn:hover,
+.database-query-join-condition-actions .glass-btn:hover,
+.database-query-select-fields-actions .glass-btn:not(.panel-collapse-btn):hover,
+.database-query-result-actions .glass-btn:hover,
+.database-query-filter-toolbar .glass-btn:hover,
+.database-query-filter-remove:hover,
+.database-query-join-condition-row .glass-btn:hover,
 .import-tools .glass-btn:not(.tiny):hover,
 .import-actions .glass-btn:not(.tiny):hover,
 .login-actions .glass-btn:not(.tiny):hover,

@@ -6,3 +6,7 @@ __pycache__/
 .artifacts/
 .vscode/
 backend/data/*.db
+backend/data/*.db-shm
+backend/data/*.db-wal
+scripts/.local-service-state.json
+.tmp_lhafile_meta/

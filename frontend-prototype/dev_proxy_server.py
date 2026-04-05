@@ -24,7 +24,7 @@ if str(WORKSPACE_DIR) not in sys.path:
 BACKEND_BASE = os.environ.get("DATAFLOW_BACKEND_BASE", "http://127.0.0.1:8000").rstrip("/")
 HOST = os.environ.get("DATAFLOW_DEV_HOST", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.environ.get("DATAFLOW_DEV_PORT", "8088"))
-BACKEND_TIMEOUT_SEC = int(os.environ.get("DATAFLOW_BACKEND_TIMEOUT_SEC", "600"))
+BACKEND_TIMEOUT_SEC = int(os.environ.get("DATAFLOW_BACKEND_TIMEOUT_SEC", "1200"))
 STATIC_CACHEABLE_SUFFIXES = {
     ".css",
     ".js",
@@ -61,7 +61,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             runtime_override = (
                 '<script>window.__DATAFLOW_API_BASE__ = window.location.origin; '
                 'window.__DATAFLOW_APP_TITLE__ = "转换映射查询"; '
-                'window.__DATAFLOW_APP_VERSION__ = "2.0.0";</script>'
+                'window.__DATAFLOW_APP_VERSION__ = "2.0.1";</script>'
             )
             html = re.sub(r'<script\s+src="\./runtime-config\.js(?:\?[^\"]*)?"></script>', runtime_override, html)
             html = re.sub(r'\.\/app\.js\?[^\"\']+', "./app.js", html)
@@ -85,7 +85,7 @@ class ProxyHandler(http.server.SimpleHTTPRequestHandler):
             body = (
                 'window.__DATAFLOW_API_BASE__ = window.location.origin;\n'
                 'window.__DATAFLOW_APP_TITLE__ = "转换映射查询";\n'
-                'window.__DATAFLOW_APP_VERSION__ = "2.0.0";\n'
+                'window.__DATAFLOW_APP_VERSION__ = "2.0.1";\n'
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/javascript; charset=utf-8")

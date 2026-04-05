@@ -3,8 +3,10 @@ import json
 import os
 import re
 import base64
+import binascii
 import sqlite3
 import time
+import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -73,10 +75,18 @@ DEFAULT_ADMIN_PASSWORD = str(os.getenv("DEFAULT_ADMIN_PASSWORD", "")).strip()
 if AUTH_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     AUTH_COOKIE_SAMESITE = "lax"
 
-ALLOWED_TABLES = {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name"}
-IMPORT_SCHEMA_TABLES = {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name"}
+PROG_CODE_TABLE = "prog_code"
+ALLOWED_TABLES = {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name", PROG_CODE_TABLE}
+IMPORT_SCHEMA_TABLES = {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "bw_object_name", PROG_CODE_TABLE}
 RSTRAN_MAPPING_RULE_TABLE = "rstran_mapping_rule"
 RSTRAN_MAPPING_RULE_FULL_TABLE = "rstran_mapping_rule_full"
+BW_OBJECT_FIELD_INVENTORY_TABLE = "bw_object_field_inventory"
+DERIVED_STATUS_TABLES = frozenset({
+    RSTRAN_MAPPING_RULE_TABLE,
+    RSTRAN_MAPPING_RULE_FULL_TABLE,
+    BW_OBJECT_FIELD_INVENTORY_TABLE,
+})
+IMPORT_STATUS_TRACKED_TABLES = frozenset(set(ALLOWED_TABLES) | set(DERIVED_STATUS_TABLES))
 DD03L_METADATA_PATH = Path(os.getenv("DD03L_METADATA_PATH", "/app/Excel Data/P4C-DD03L-Table Fields-RS_DD-0317.xlsx"))
 DATA_QUERY_EXCLUDED_TABLES = frozenset({"import_status", "users", "user_sessions"})
 DATA_QUERY_ALLOWED_JOIN_TYPES = {
@@ -111,10 +121,12 @@ _TABLE_COLUMN_NAMES_CACHE: Dict[str, Set[str]] = {}
 _TABLE_EXISTS_CACHE: Dict[str, bool] = {}
 _RSIOBJ_TYPE_LOOKUP_CACHE: Dict[str, str] | None = None
 _ADSO_FIELD_TEXT_LOOKUP_CACHE: Dict[Tuple[str, str], Dict[Tuple[str, str], str]] = {}
+_ADSO_XML_FIELD_LOOKUP_CACHE: Dict[str, Dict[str, Tuple[str, str, str]]] = {}
+_TRCS_FIELD_LOOKUP_CACHE: Dict[str, Dict[str, Tuple[str, str, str]]] = {}
 RSDIOBJ_IOBJTP_TO_FIELD_TYPE = {
     "CHA": "I",
-    "KYF": "K",
-    "UNI": "U",
+    "KYF": "I",
+    "UNI": "I",
 }
 RSDIOBJ_BACKED_FIELD_TYPES = frozenset({"I", "K", "U"})
 
@@ -132,6 +144,17 @@ app.add_middleware(
 
 class ImportStatusUpdate(BaseModel):
     table_name: str
+
+
+class ProgCodeUpsertRequest(BaseModel):
+    prog_id: str
+    prog_type: str = ""
+    prog_code: str = ""
+
+
+class AbapToSqlRequest(BaseModel):
+    output_table: str = ""
+    abap_code: str = ""
 
 
 class LoginRequest(BaseModel):
@@ -177,6 +200,8 @@ class PathSegmentRequest(BaseModel):
     TARGETNAME: str = Field(default="", alias="target")
     SOURCETYPE: str = Field(default="", alias="source_type")
     TARGETTYPE: str = Field(default="", alias="target_type")
+    SOURCESUBTYPE: str = Field(default="", alias="source_subtype")
+    TARGETSUBTYPE: str = Field(default="", alias="target_subtype")
     SOURCESYS: str = Field(default="", alias="source_system")
     TARGETSYSTEM: str = Field(default="", alias="target_system")
     TRANIDS: List[str] = Field(default_factory=list, alias="tran_ids")
@@ -214,7 +239,7 @@ class DataQueryRequest(BaseModel):
     offset: int = 0
 
 
-STEP_LEVEL_ROUTINE_KINDS = {"START", "END", "EXPERT", "GLOBAL"}
+STEP_LEVEL_ROUTINE_KINDS = {"START", "END", "EXPERT"}
 RULE_LEVEL_ROUTINE_KINDS = {"FORMULA", "NORMAL", "ROUTINE"}
 ROUTINE_KIND_SORT_ORDER = {
     "GLOBAL": 0,
@@ -842,28 +867,61 @@ def ensure_rstran_mapping_rule_table() -> None:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS `{RSTRAN_MAPPING_RULE_TABLE}` (
-              `tran_id` VARCHAR(64) NOT NULL,
-              `rule_id` INT NOT NULL,
-              `step_id` INT NOT NULL,
-              `seg_id` VARCHAR(64) NOT NULL DEFAULT '',
-              `pair_index` INT NOT NULL,
-              `ruleposit` VARCHAR(64) NOT NULL DEFAULT '',
-              `source_field` VARCHAR(255) NULL,
-              `target_field` VARCHAR(255) NULL,
-              `target_keyflag` VARCHAR(8) NULL,
-              `rule_type` VARCHAR(32) NULL,
-              `aggr` VARCHAR(64) NULL,
-              `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              PRIMARY KEY (`tran_id`, `rule_id`, `step_id`, `seg_id`, `pair_index`),
-              KEY `idx_mapping_rule_tran` (`tran_id`),
-              KEY `idx_mapping_rule_source` (`tran_id`, `source_field`),
-              KEY `idx_mapping_rule_target` (`tran_id`, `target_field`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            """
-        )
+        if IS_SQLITE:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{RSTRAN_MAPPING_RULE_TABLE}` (
+                  `tran_id` TEXT NOT NULL,
+                  `rule_id` INTEGER NOT NULL,
+                  `step_id` INTEGER NOT NULL,
+                  `seg_id` TEXT NOT NULL DEFAULT '',
+                  `pair_index` INTEGER NOT NULL,
+                  `ruleposit` TEXT NOT NULL DEFAULT '',
+                  `source_field` TEXT NULL,
+                  `target_field` TEXT NULL,
+                  `target_keyflag` TEXT NULL,
+                  `rule_type` TEXT NULL,
+                                    `group_type` TEXT NULL,
+                  `aggr` TEXT NULL,
+                  `updated_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`tran_id`, `rule_id`, `step_id`, `seg_id`, `pair_index`)
+                )
+                """
+            )
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_tran` ON `{RSTRAN_MAPPING_RULE_TABLE}` (`tran_id`)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_source` ON `{RSTRAN_MAPPING_RULE_TABLE}` (`tran_id`, `source_field`)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_target` ON `{RSTRAN_MAPPING_RULE_TABLE}` (`tran_id`, `target_field`)")
+        else:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{RSTRAN_MAPPING_RULE_TABLE}` (
+                  `tran_id` VARCHAR(64) NOT NULL,
+                  `rule_id` INT NOT NULL,
+                  `step_id` INT NOT NULL,
+                  `seg_id` VARCHAR(64) NOT NULL DEFAULT '',
+                  `pair_index` INT NOT NULL,
+                  `ruleposit` VARCHAR(64) NOT NULL DEFAULT '',
+                  `source_field` VARCHAR(255) NULL,
+                  `target_field` VARCHAR(255) NULL,
+                  `target_keyflag` VARCHAR(8) NULL,
+                  `rule_type` VARCHAR(32) NULL,
+                  `group_type` VARCHAR(32) NULL,
+                  `aggr` VARCHAR(64) NULL,
+                  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`tran_id`, `rule_id`, `step_id`, `seg_id`, `pair_index`),
+                  KEY `idx_mapping_rule_tran` (`tran_id`),
+                  KEY `idx_mapping_rule_source` (`tran_id`, `source_field`),
+                  KEY `idx_mapping_rule_target` (`tran_id`, `target_field`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
+            )
+
+        existing_columns = set(get_table_columns(RSTRAN_MAPPING_RULE_TABLE))
+        if "group_type" not in existing_columns:
+            if IS_SQLITE:
+                cur.execute(f"ALTER TABLE `{RSTRAN_MAPPING_RULE_TABLE}` ADD COLUMN `group_type` TEXT NULL")
+            else:
+                cur.execute(f"ALTER TABLE `{RSTRAN_MAPPING_RULE_TABLE}` ADD COLUMN `group_type` VARCHAR(32) NULL AFTER `rule_type`")
         conn.commit()
     finally:
         cur.close()
@@ -1132,8 +1190,1078 @@ def ensure_import_target_table_schema(table_name: str) -> None:
         return
     if table_exists(normalized_table_name):
         return
+    if normalized_table_name == PROG_CODE_TABLE:
+        ensure_prog_code_schema()
+        return
     if IS_SQLITE and normalized_table_name in DDIC_METADATA_TABLES:
         ensure_sqlite_ddic_metadata_table_schema(normalized_table_name)
+
+
+def ensure_prog_code_schema() -> None:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if IS_SQLITE:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{PROG_CODE_TABLE}` (
+                  `prog_id` TEXT NOT NULL,
+                  `prog_type` TEXT NOT NULL DEFAULT '',
+                  `prog_code` TEXT NOT NULL DEFAULT '',
+                  `updated_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`prog_id`)
+                )
+                """
+            )
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_{PROG_CODE_TABLE}_type` ON `{PROG_CODE_TABLE}` (`prog_type`)")
+        else:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{PROG_CODE_TABLE}` (
+                  `prog_id` VARCHAR(40) NOT NULL,
+                  `prog_type` VARCHAR(20) NOT NULL DEFAULT '',
+                  `prog_code` LONGTEXT NOT NULL,
+                  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`prog_id`),
+                  KEY `idx_{PROG_CODE_TABLE}_type` (`prog_type`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Program code import table';
+                """
+            )
+        conn.commit()
+        _TABLE_EXISTS_CACHE.pop(PROG_CODE_TABLE, None)
+        _TABLE_COLUMN_NAMES_CACHE.pop(PROG_CODE_TABLE, None)
+    finally:
+        cur.close()
+        conn.close()
+
+
+def normalize_prog_code_text(value: object) -> str:
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def normalize_abap_object_name(value: object) -> str:
+    return str(value or "").strip().replace("->", "=>").upper()
+
+
+def normalize_abap_statement_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def strip_abap_inline_comment(line: str) -> str:
+    if '"' not in line:
+        return line
+    return line.split('"', 1)[0]
+
+
+def extract_abap_object_references(code: str) -> List[Dict[str, str]]:
+    normalized_code = normalize_prog_code_text(code)
+    found: List[Dict[str, str]] = []
+    seen: Set[Tuple[str, str, str]] = set()
+
+    patterns: List[Tuple[str, re.Pattern[str]]] = [
+        ("function", re.compile(r"CALL\s+FUNCTION\s+'([^']+)'", re.IGNORECASE)),
+        ("include", re.compile(r"\bINCLUDE\s+([A-Za-z0-9_/]+)\b", re.IGNORECASE)),
+        ("program", re.compile(r"\bSUBMIT\s+([A-Za-z0-9_/]+)\b", re.IGNORECASE)),
+        ("method", re.compile(r"CALL\s+METHOD\s+([A-Za-z0-9_/]+(?:=>|->)[A-Za-z0-9_/]+|[A-Za-z0-9_/]+)\b", re.IGNORECASE)),
+        ("method", re.compile(r"\b([A-Za-z0-9_/]+=>[A-Za-z0-9_/]+)\b")),
+    ]
+
+    for ref_type, pattern in patterns:
+        for match in pattern.finditer(normalized_code):
+            name = normalize_abap_object_name(match.group(1))
+            key = (ref_type, name, "")
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            found.append({"type": ref_type, "name": name})
+
+    perform_program_pattern = re.compile(r"\bPERFORM\s+([A-Za-z0-9_/]+)\s+IN\s+PROGRAM\s+([A-Za-z0-9_/]+)", re.IGNORECASE)
+    for match in perform_program_pattern.finditer(normalized_code):
+        form_name = normalize_abap_object_name(match.group(1))
+        program_name = normalize_abap_object_name(match.group(2))
+        key = ("form", form_name, program_name)
+        if form_name and key not in seen:
+            seen.add(key)
+            found.append({"type": "form", "name": form_name, "program": program_name})
+
+    perform_pattern = re.compile(r"\bPERFORM\s+([A-Za-z0-9_/]+)\b", re.IGNORECASE)
+    for match in perform_pattern.finditer(normalized_code):
+        form_name = normalize_abap_object_name(match.group(1))
+        key = ("form", form_name, "")
+        if form_name and key not in seen:
+            seen.add(key)
+            found.append({"type": "form", "name": form_name})
+
+    return found
+
+
+def fetch_prog_code_exact(prog_id: str) -> Dict[str, Any] | None:
+    normalized = normalize_abap_object_name(prog_id)
+    if not normalized:
+        return None
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT `prog_id`, `prog_type`, `prog_code`, `updated_at`
+            FROM `{PROG_CODE_TABLE}`
+            WHERE UPPER(`prog_id`) = UPPER(%s)
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = cur.fetchone()
+        return row if row else None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def search_prog_code_entries(keyword: str, limit: int = 50) -> List[Dict[str, Any]]:
+    normalized_keyword = str(keyword or "").strip()
+    if not normalized_keyword:
+        return []
+
+    resolved_limit = max(1, min(int(limit or 50), 200))
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        base_sql = f"""
+            SELECT `prog_id`, `prog_type`, `updated_at`
+            FROM `{PROG_CODE_TABLE}`
+        """
+        if "*" in normalized_keyword:
+            like_pattern = (
+                normalized_keyword
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+                .replace("*", "%")
+            )
+            cur.execute(
+                base_sql + """
+                WHERE UPPER(`prog_id`) LIKE UPPER(%s) ESCAPE '\\'
+                ORDER BY LENGTH(`prog_id`) ASC, UPPER(`prog_id`) ASC
+                LIMIT %s
+                """,
+                (like_pattern, resolved_limit),
+            )
+        else:
+            cur.execute(
+                base_sql + """
+                WHERE UPPER(`prog_id`) = UPPER(%s)
+                ORDER BY UPPER(`prog_id`) ASC
+                LIMIT %s
+                """,
+                (normalized_keyword, resolved_limit),
+            )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        conn.close()
+
+    return [
+        {
+            "prog_id": str(row.get("prog_id") or "").strip(),
+            "prog_type": str(row.get("prog_type") or "").strip(),
+            "updated_at": str(row.get("updated_at") or "").strip(),
+        }
+        for row in rows
+    ]
+
+
+def fetch_prog_code_by_body(pattern: str, preferred_prog_id: str = "") -> Dict[str, Any] | None:
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT `prog_id`, `prog_type`, `prog_code`, `updated_at`
+            FROM `{PROG_CODE_TABLE}`
+            WHERE UPPER(`prog_code`) LIKE UPPER(%s)
+            ORDER BY CASE WHEN UPPER(`prog_id`) = UPPER(%s) THEN 0 ELSE 1 END, LENGTH(`prog_id`) ASC
+            LIMIT 1
+            """,
+            (pattern, preferred_prog_id),
+        )
+        row = cur.fetchone()
+        return row if row else None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def resolve_prog_code_reference(reference: Dict[str, str]) -> Tuple[Dict[str, Any] | None, str]:
+    ref_name = normalize_abap_object_name(reference.get("name"))
+    ref_type = str(reference.get("type") or "").strip().lower()
+    ref_program = normalize_abap_object_name(reference.get("program"))
+
+    if ref_type == "form" and ref_program:
+        program_entry = fetch_prog_code_exact(ref_program)
+        if program_entry and re.search(rf"\bFORM\s+{re.escape(ref_name)}\b", str(program_entry.get("prog_code") or ""), re.IGNORECASE):
+            return program_entry, f"program:{ref_program}"
+
+    exact_entry = fetch_prog_code_exact(ref_name)
+    if exact_entry:
+        return exact_entry, "prog_id_exact"
+
+    search_pattern = ""
+    if ref_type == "form":
+        search_pattern = f"%FORM {ref_name}.%"
+    elif ref_type == "function":
+        search_pattern = f"%FUNCTION {ref_name}%"
+    elif ref_type == "method":
+        search_pattern = f"%METHOD {ref_name.split('=>')[-1]}.%"
+    elif ref_type in {"include", "program"}:
+        search_pattern = f"%PROGRAM {ref_name}.%"
+
+    if search_pattern:
+        fallback_entry = fetch_prog_code_by_body(search_pattern, preferred_prog_id=ref_name)
+        if fallback_entry:
+            return fallback_entry, "body_search"
+
+    return None, "not_found"
+
+
+def resolve_abap_call_chain(code: str, max_depth: int = 40) -> Dict[str, Any]:
+    detected_refs = extract_abap_object_references(code)
+    queue: deque[Dict[str, str]] = deque(detected_refs)
+    processed_keys: Set[Tuple[str, str, str]] = set()
+    matched_entries: List[Dict[str, Any]] = []
+    matched_prog_ids: Set[str] = set()
+    missing_refs: List[Dict[str, str]] = []
+
+    while queue and len(processed_keys) < max_depth:
+        reference = queue.popleft()
+        key = (
+            str(reference.get("type") or "").strip().lower(),
+            normalize_abap_object_name(reference.get("name")),
+            normalize_abap_object_name(reference.get("program")),
+        )
+        if not key[1] or key in processed_keys:
+            continue
+        processed_keys.add(key)
+
+        entry, matched_by = resolve_prog_code_reference(reference)
+        if not entry:
+            missing_refs.append({
+                "type": key[0],
+                "name": key[1],
+                "program": key[2],
+            })
+            continue
+
+        prog_id = normalize_abap_object_name(entry.get("prog_id"))
+        if prog_id in matched_prog_ids:
+            continue
+        matched_prog_ids.add(prog_id)
+        matched_entries.append({
+            "prog_id": prog_id,
+            "prog_type": str(entry.get("prog_type") or ""),
+            "prog_code": normalize_prog_code_text(entry.get("prog_code")),
+            "matched_by": matched_by,
+            "source_ref": key[1],
+        })
+
+        for nested_ref in extract_abap_object_references(str(entry.get("prog_code") or "")):
+            queue.append(nested_ref)
+
+    return {
+        "detected_refs": detected_refs,
+        "matched_entries": matched_entries,
+        "missing_refs": missing_refs,
+    }
+
+
+def normalize_abap_identifier_to_sql(name: str, fallback: str = "FIELD") -> str:
+    normalized = str(name or "").strip()
+    normalized = normalized.replace("<", "").replace(">", "")
+    normalized = normalized.replace("->", "_").replace("=>", "_").replace("~", "_")
+    normalized = normalized.replace("-", "_").replace("/", "_")
+    normalized = re.sub(r"[^A-Za-z0-9_]", "_", normalized)
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    if not normalized:
+        normalized = fallback
+    if normalized[0].isdigit():
+        normalized = f"_{normalized}"
+    return normalized.upper()
+
+
+def render_sql_identifier(name: str, fallback: str = "FIELD") -> str:
+    raw_name = normalize_abap_statement_text(name).rstrip(".")
+    if not raw_name:
+        raw_name = fallback
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", raw_name):
+        return raw_name
+    escaped_name = raw_name.replace('"', '""')
+    return f'"{escaped_name}"'
+
+
+def render_abap_assignment_target(target: str, fallback: str = "FIELD") -> str:
+    raw_target = normalize_abap_statement_text(target).rstrip(".")
+    result_field_match = re.match(r"^<[^>]+>-(.+)$", raw_target)
+    if result_field_match:
+        return render_sql_identifier(result_field_match.group(1), fallback=fallback)
+    upper_target = normalize_abap_object_name(raw_target)
+    if upper_target.startswith("LS_RANGE-"):
+        return render_sql_identifier(raw_target.split("-", 1)[1], fallback=fallback)
+    return render_sql_identifier(raw_target, fallback=fallback)
+
+
+def abap_expression_to_sql(expression: str) -> str:
+    normalized = normalize_abap_statement_text(expression).rstrip(".")
+    if not normalized:
+        return "NULL"
+    upper_expr = normalized.upper()
+    if upper_expr in {"SPACE", "INITIAL"}:
+        return "NULL"
+    if upper_expr == "ABAP_TRUE":
+        return "1"
+    if upper_expr == "ABAP_FALSE":
+        return "0"
+    if re.fullmatch(r"'[^']*'", normalized):
+        return normalized
+    converted = normalized
+    converted = converted.replace("->", ".").replace("=>", ".").replace("~", ".")
+    converted = re.sub(r"<([A-Za-z0-9_/-]+)>", lambda match: match.group(1).replace("-", ".").replace("/", "_"), converted)
+    converted = re.sub(r"\b([A-Za-z0-9_]+)-(/[^\s\.,]+)\b", lambda match: f'{match.group(1)}."{match.group(2)}"', converted)
+    converted = re.sub(r"\b([A-Za-z0-9_]+)-([A-Za-z0-9_]+)\b", r"\1.\2", converted)
+    converted = re.sub(r"\bL[TSVRO]?_[A-Za-z0-9_]+\.((?:\"/[^\"]+\")|(?:[A-Za-z0-9_]+))", r"\1", converted)
+    converted = converted.replace(" EQ ", " = ").replace(" NE ", " <> ")
+    return converted
+
+
+def is_read_table_key_continuation(previous_line: str, current_line: str) -> bool:
+    prev = normalize_abap_statement_text(previous_line).upper()
+    current = normalize_abap_statement_text(current_line).upper()
+    return bool(prev and "READ TABLE" in prev and "WITH KEY" in prev and current.startswith("FIELDNAME ="))
+
+
+def is_non_output_abap_target(target: str) -> bool:
+    normalized = normalize_abap_object_name(target)
+    if not normalized:
+        return True
+    if normalized in {"P_SUBRC", "SY-TABIX", "SY_SUBRC", "SY-TABIX"}:
+        return True
+    if re.match(r"^<[^>]+>-.+$", str(target or "").strip()):
+        return False
+    if normalized.startswith(("L_", "LT_", "LS_", "LV_", "LO_", "LR_", "<")) and not normalized.startswith("LS_RANGE-"):
+        return True
+    return False
+
+
+def normalize_abap_output_alias(target: str) -> str:
+    normalized = str(target or "").strip()
+    result_field_match = re.match(r"^<[^>]+>-(.+)$", normalized)
+    if result_field_match:
+        return normalize_abap_identifier_to_sql(result_field_match.group(1), fallback="FIELD")
+    upper_target = normalize_abap_object_name(normalized)
+    if upper_target.startswith("LS_RANGE-"):
+        return normalize_abap_identifier_to_sql(upper_target.split("-", 1)[1], fallback="FIELD")
+    return normalize_abap_identifier_to_sql(normalized, fallback="FIELD")
+
+
+def is_supported_abap_direct_target(target: str) -> bool:
+    raw_target = str(target or "").strip()
+    upper_target = normalize_abap_object_name(raw_target)
+    if re.match(r"^<(?:result_fields|source_fields)>-.+$", raw_target, re.IGNORECASE):
+        return True
+    return upper_target.startswith("LS_RANGE-")
+
+
+def should_keep_program_output_target(target: str) -> bool:
+    raw_target = normalize_abap_statement_text(target).rstrip(".")
+    if not raw_target:
+        return False
+    if is_supported_abap_direct_target(raw_target):
+        return True
+    normalized_target = normalize_abap_object_name(raw_target)
+    return bool(normalized_target) and normalized_target.startswith(("LV_", "GV_", "CV_", "RV_", "EV_"))
+
+
+def parse_abap_call_method_blocks(code: str) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    lines = normalize_prog_code_text(code).split("\n")
+    index = 0
+
+    while index < len(lines):
+        line = normalize_abap_statement_text(strip_abap_inline_comment(lines[index]))
+        call_match = re.match(r"^CALL\s+METHOD\s+([^\s\.]+)\.?$", line, re.IGNORECASE)
+        if not call_match:
+            index += 1
+            continue
+
+        method_name = normalize_abap_object_name(call_match.group(1))
+        block = {
+            "method_name": method_name,
+            "statement": line,
+            "exporting": {},
+            "importing": {},
+            "changing": {},
+            "receiving": {},
+        }
+
+        index += 1
+        section = ""
+        while index < len(lines):
+            block_line = normalize_abap_statement_text(strip_abap_inline_comment(lines[index]))
+            if not block_line or block_line.startswith("*"):
+                index += 1
+                continue
+
+            upper_line = block_line.upper().rstrip(".")
+            if upper_line in {"EXPORTING", "IMPORTING", "CHANGING", "RECEIVING"}:
+                section = upper_line.lower()
+                index += 1
+                continue
+
+            param_match = re.match(r"^([A-Za-z0-9_]+)\s*=\s*(.+?)(\.)?$", block_line, re.IGNORECASE)
+            if section and param_match:
+                formal_name = normalize_abap_object_name(param_match.group(1))
+                actual_expr = normalize_abap_statement_text(param_match.group(2))
+                block[section][formal_name] = actual_expr
+                reached_end = bool(param_match.group(3))
+                index += 1
+                if reached_end:
+                    break
+                continue
+
+            break
+
+        blocks.append(block)
+
+    return blocks
+
+
+def parse_abap_call_function_blocks(code: str) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    lines = normalize_prog_code_text(code).split("\n")
+    index = 0
+
+    while index < len(lines):
+        line = normalize_abap_statement_text(strip_abap_inline_comment(lines[index]))
+        call_match = re.match(r"^CALL\s+FUNCTION\s+'([^']+)'\.?$", line, re.IGNORECASE)
+        if not call_match:
+            index += 1
+            continue
+
+        function_name = normalize_abap_object_name(call_match.group(1))
+        block = {
+            "function_name": function_name,
+            "statement": line,
+            "exporting": {},
+            "importing": {},
+            "changing": {},
+            "tables": {},
+        }
+
+        index += 1
+        section = ""
+        while index < len(lines):
+            block_line = normalize_abap_statement_text(strip_abap_inline_comment(lines[index]))
+            if not block_line or block_line.startswith("*"):
+                index += 1
+                continue
+
+            upper_line = block_line.upper().rstrip(".")
+            if upper_line in {"EXPORTING", "IMPORTING", "CHANGING", "TABLES"}:
+                section = upper_line.lower()
+                index += 1
+                continue
+
+            if upper_line == "EXCEPTIONS":
+                break
+
+            param_match = re.match(r"^([A-Za-z0-9_]+)\s*=\s*(.+?)(\.)?$", block_line, re.IGNORECASE)
+            if section and param_match:
+                formal_name = normalize_abap_object_name(param_match.group(1))
+                actual_expr = normalize_abap_statement_text(param_match.group(2))
+                block[section][formal_name] = actual_expr
+                reached_end = bool(param_match.group(3))
+                index += 1
+                if reached_end:
+                    break
+                continue
+
+            break
+
+        blocks.append(block)
+
+    return blocks
+
+
+def rewrite_method_expr_to_actual_sql(expression: str, actual_mapping: Dict[str, str]) -> str:
+    rewritten = normalize_abap_statement_text(expression).rstrip(".")
+    for formal_name, actual_expr in sorted(actual_mapping.items(), key=lambda item: len(item[0]), reverse=True):
+        rewritten = re.sub(
+            rf"\b{re.escape(formal_name)}\b",
+            f"({normalize_abap_statement_text(actual_expr)})",
+            rewritten,
+            flags=re.IGNORECASE,
+        )
+    return abap_expression_to_sql(rewritten)
+
+
+def extract_method_lookup_semantics(method_code: str) -> Dict[str, Any]:
+    normalized_code = normalize_prog_code_text(method_code)
+    select_match = re.search(
+        r"SELECT\s+\*\s+FROM\s+([^\s]+)\s+INTO\s+TABLE\s+([A-Za-z0-9_<>\-/]+)\.",
+        normalized_code,
+        re.IGNORECASE,
+    )
+    read_match = re.search(
+        r"READ\s+TABLE\s+([A-Za-z0-9_<>\-/]+)[\s\S]*?WITH\s+KEY\s+([A-Za-z0-9_<>\-/]+)\s*=\s*([A-Za-z0-9_<>\-/]+)\.",
+        normalized_code,
+        re.IGNORECASE,
+    )
+    if_block_match = re.search(
+        r"IF\s+SY-SUBRC\s*=\s*0\.(?P<success>[\s\S]*?)ELSE\.(?P<fallback>[\s\S]*?)ENDIF\.",
+        normalized_code,
+        re.IGNORECASE,
+    )
+    if not (select_match and read_match and if_block_match):
+        return {}
+
+    success_block = if_block_match.group("success")
+    fallback_block = if_block_match.group("fallback")
+    success_assignments = re.findall(r"([A-Za-z0-9_<>\-/]+)\s*=\s*(.+?)\.", success_block, re.IGNORECASE)
+    fallback_assignments = re.findall(r"([A-Za-z0-9_<>\-/]+)\s*=\s*(.+?)\.", fallback_block, re.IGNORECASE)
+    fallback_map = {normalize_abap_object_name(target): normalize_abap_statement_text(expr) for target, expr in fallback_assignments}
+
+    outputs: Dict[str, Dict[str, str]] = {}
+    for target, expr in success_assignments:
+        normalized_target = normalize_abap_object_name(target)
+        if not normalized_target:
+            continue
+        outputs[normalized_target] = {
+            "success_expr": normalize_abap_statement_text(expr),
+            "fallback_expr": fallback_map.get(normalized_target, ""),
+        }
+
+    if not outputs:
+        return {}
+
+    return {
+        "source_table": select_match.group(1).strip(),
+        "lookup_table": normalize_abap_object_name(read_match.group(1)),
+        "key_field": normalize_abap_statement_text(read_match.group(2)),
+        "formal_input": normalize_abap_object_name(read_match.group(3)),
+        "outputs": outputs,
+    }
+
+
+def build_method_output_expr_sql(semantics: Dict[str, Any], formal_output: str, actual_mapping: Dict[str, str]) -> str:
+    source_table = semantics.get("source_table") or "source_table"
+    key_field = semantics.get("key_field") or "lookup_key"
+    input_expr_sql = rewrite_method_expr_to_actual_sql(semantics.get("formal_input") or "NULL", actual_mapping)
+    output_semantics = (semantics.get("outputs") or {}).get(normalize_abap_object_name(formal_output)) or {}
+    success_expr = normalize_abap_statement_text(output_semantics.get("success_expr") or "NULL")
+    fallback_expr = normalize_abap_statement_text(output_semantics.get("fallback_expr") or "")
+
+    field_match = re.match(r"^<[^>]+>-([A-Za-z0-9_/]+)$", success_expr, re.IGNORECASE)
+    if field_match:
+        lookup_field = normalize_abap_statement_text(field_match.group(1))
+        fallback_expr_sql = rewrite_method_expr_to_actual_sql(fallback_expr or semantics.get("formal_input") or "NULL", actual_mapping)
+        return (
+            f"COALESCE(( SELECT DISTINCT {lookup_field} FROM {source_table} "
+            f"WHERE {key_field} = {input_expr_sql} ), {fallback_expr_sql})"
+        )
+
+    success_expr_sql = rewrite_method_expr_to_actual_sql(success_expr, actual_mapping)
+    fallback_expr_sql = rewrite_method_expr_to_actual_sql(fallback_expr or "NULL", actual_mapping)
+    return (
+        f"CASE WHEN EXISTS ( SELECT 1 FROM {source_table} WHERE {key_field} = {input_expr_sql} ) "
+        f"THEN {success_expr_sql} ELSE {fallback_expr_sql} END"
+    )
+
+
+def derive_abap_function_call_rules(code: str, resolution: Dict[str, Any]) -> Tuple[List[Dict[str, str]], Set[str]]:
+    function_rules: List[Dict[str, str]] = []
+    ignored_aliases: Set[str] = set()
+    matched_entries = resolution.get("matched_entries") or []
+    matched_by_prog_id = {
+        normalize_abap_object_name(entry.get("prog_id")): entry
+        for entry in matched_entries
+        if normalize_abap_object_name(entry.get("prog_id"))
+    }
+
+    for block in parse_abap_call_function_blocks(code):
+        for formal_name in list((block.get("importing") or {}).keys()) + list((block.get("changing") or {}).keys()):
+            ignored_aliases.add(normalize_abap_output_alias(formal_name))
+
+        function_entry = matched_by_prog_id.get(normalize_abap_object_name(block.get("function_name")))
+        if not function_entry:
+            continue
+
+        semantics = extract_method_lookup_semantics(str(function_entry.get("prog_code") or ""))
+        if not semantics:
+            continue
+
+        actual_mapping = {}
+        actual_mapping.update(block.get("exporting") or {})
+        actual_mapping.update(block.get("changing") or {})
+        actual_mapping.update(block.get("tables") or {})
+
+        statement = normalize_abap_statement_text(block.get("statement") or "CALL FUNCTION")
+        source_table = semantics.get("source_table") or "source_table"
+        key_field = semantics.get("key_field") or "lookup_key"
+        for formal_output in (semantics.get("outputs") or {}).keys():
+            actual_target = str(
+                (block.get("importing") or {}).get(formal_output)
+                or (block.get("changing") or {}).get(formal_output)
+                or ""
+            ).strip()
+            if not actual_target or not should_keep_program_output_target(actual_target):
+                continue
+
+            function_rules.append({
+                "target": actual_target,
+                "alias": normalize_abap_output_alias(actual_target),
+                "expr_sql": build_method_output_expr_sql(semantics, formal_output, actual_mapping),
+                "statement": f"{statement} -> 从 {source_table} 按 {key_field} 查值后回写 {actual_target}",
+            })
+
+    return function_rules, ignored_aliases
+
+
+def derive_abap_method_call_rules(code: str, resolution: Dict[str, Any]) -> Tuple[List[Dict[str, str]], Set[str]]:
+    method_rules: List[Dict[str, str]] = []
+    ignored_aliases: Set[str] = set()
+    matched_entries = resolution.get("matched_entries") or []
+    matched_by_prog_id = {
+        normalize_abap_object_name(entry.get("prog_id")): entry
+        for entry in matched_entries
+        if normalize_abap_object_name(entry.get("prog_id"))
+    }
+
+    for block in parse_abap_call_method_blocks(code):
+        for formal_name in list((block.get("importing") or {}).keys()) + list((block.get("receiving") or {}).keys()):
+            ignored_aliases.add(normalize_abap_output_alias(formal_name))
+
+        method_entry = matched_by_prog_id.get(normalize_abap_object_name(block.get("method_name")))
+        if not method_entry:
+            continue
+
+        semantics = extract_method_lookup_semantics(str(method_entry.get("prog_code") or ""))
+        if not semantics:
+            continue
+
+        actual_mapping = {}
+        actual_mapping.update(block.get("exporting") or {})
+        actual_mapping.update(block.get("changing") or {})
+        actual_mapping.update(block.get("receiving") or {})
+
+        statement = normalize_abap_statement_text(block.get("statement") or "CALL METHOD")
+        source_table = semantics.get("source_table") or "source_table"
+        key_field = semantics.get("key_field") or "lookup_key"
+        for formal_output in (semantics.get("outputs") or {}).keys():
+            actual_target = str(
+                (block.get("importing") or {}).get(formal_output)
+                or (block.get("changing") or {}).get(formal_output)
+                or (block.get("receiving") or {}).get(formal_output)
+                or ""
+            ).strip()
+            if not actual_target or not should_keep_program_output_target(actual_target):
+                continue
+
+            method_rules.append({
+                "target": actual_target,
+                "alias": normalize_abap_output_alias(actual_target),
+                "expr_sql": build_method_output_expr_sql(semantics, formal_output, actual_mapping),
+                "statement": f"{statement} -> 从 {source_table} 按 {key_field} 查值后回写 {actual_target}",
+            })
+
+    return method_rules, ignored_aliases
+
+
+def finalize_abap_output_rules(rule_order: List[str], rule_map: Dict[str, Dict[str, str]]) -> List[Dict[str, str]]:
+    finalized: List[Dict[str, str]] = []
+    seen_aliases: Set[str] = set()
+    range_aliases = {"SIGN", "OPTION", "FIELDNAME", "IOBJNM", "LOW", "HIGH"}
+    has_range_struct = any(alias in range_aliases for alias in rule_order)
+
+    for alias in rule_order:
+        rule = rule_map.get(alias)
+        if not rule:
+            continue
+        if has_range_struct and alias not in range_aliases:
+            continue
+        if alias in seen_aliases:
+            continue
+        seen_aliases.add(alias)
+        finalized.append(rule)
+
+    return finalized
+
+
+def collect_abap_field_rules(code: str) -> List[Dict[str, str]]:
+    rule_order: List[str] = []
+    rule_map: Dict[str, Dict[str, str]] = {}
+    previous_line = ""
+
+    def store_rule(target: str, expr_sql: str, statement: str) -> None:
+        if is_non_output_abap_target(target) or not is_supported_abap_direct_target(target):
+            return
+        alias = normalize_abap_output_alias(target)
+        payload = {
+            "target": target,
+            "alias": alias,
+            "expr_sql": expr_sql or "NULL",
+            "statement": normalize_abap_statement_text(statement),
+        }
+        if alias not in rule_map:
+            rule_order.append(alias)
+        rule_map[alias] = payload
+
+    for raw_line in normalize_prog_code_text(code).split("\n"):
+        line = normalize_abap_statement_text(strip_abap_inline_comment(raw_line))
+        if not line or line.startswith("*"):
+            continue
+
+        if is_read_table_key_continuation(previous_line, line):
+            previous_line = line
+            continue
+
+        assign_match = re.match(r"^([A-Za-z0-9_<>\-/]+)\s*=\s*(.+?)\.$", line, re.IGNORECASE)
+        if assign_match:
+            store_rule(assign_match.group(1), abap_expression_to_sql(assign_match.group(2)), line)
+            previous_line = line
+            continue
+
+        previous_line = line
+
+    return finalize_abap_output_rules(rule_order, rule_map)
+
+
+def detect_abap_result_merge_semantics(code: str) -> Dict[str, Any]:
+    normalized_code = normalize_prog_code_text(code)
+    upper_code = normalized_code.upper()
+    return {
+        "has_range_append": "APPEND LINES OF L_T_RESULT TO L_T_RANGE" in upper_code,
+        "has_range_insert": bool(re.search(r"\bINSERT\s+LS_RANGE\s+INTO\s+TABLE\s+L_T_RANGE\b", upper_code)),
+        "has_logsys_lookup": bool(re.search(r"READ\s+TABLE\s+L_T_RANGE\s+WITH\s+KEY[\s\S]*FIELDNAME\s*=\s*'LOGSYS'", upper_code)),
+        "has_modify_existing": "MODIFY L_T_RANGE INDEX L_IDX" in upper_code,
+        "has_append_new": bool(re.search(r"\bELSE\.\s*APPEND\s+L_T_RANGE\.", upper_code, re.DOTALL)),
+    }
+
+
+def extract_select_source_summary(code: str) -> Dict[str, str]:
+    normalized_code = normalize_prog_code_text(code)
+    select_match = re.search(r"SELECT\s+\*\s+FROM\s+([^\s]+)\s+INTO\s+TABLE\s+([A-Za-z0-9_<>\-/]+)\s+WHERE\s+([^\.]+)\.", normalized_code, re.IGNORECASE)
+    if not select_match:
+        return {}
+    return {
+        "source_table": select_match.group(1).strip(),
+        "into_table": select_match.group(2).strip(),
+        "where_clause": normalize_abap_statement_text(select_match.group(3)),
+    }
+
+
+def unwrap_sql_literal(value: str) -> str:
+    normalized = str(value or "").strip()
+    if re.fullmatch(r"'[^']*'", normalized):
+        return normalized[1:-1]
+    return normalized
+
+
+def get_rule_by_alias(rules: List[Dict[str, str]], alias: str) -> Dict[str, str] | None:
+    for rule in rules:
+        if str(rule.get("alias") or "").upper() == alias.upper():
+            return rule
+    return None
+
+
+def map_sign_option_to_filter_semantics(sign_value: str, option_value: str) -> Dict[str, str]:
+    # Fixed translation rules for ABAP selection conditions:
+    # I + EQ -> IN
+    # I + BT -> BETWEEN
+    # I + CP -> LIKE
+    # E + EQ -> NOT IN
+    # E + BT -> NOT BETWEEN
+    # E + CP -> NOT LIKE
+    sign_token = unwrap_sql_literal(sign_value).upper()
+    option_token = unwrap_sql_literal(option_value).upper()
+
+    semantics = {
+        ("I", "EQ"): {"label": "IN", "predicate": "IN"},
+        ("E", "EQ"): {"label": "NOT IN", "predicate": "NOT IN"},
+        ("I", "BT"): {"label": "BETWEEN", "predicate": "BETWEEN"},
+        ("E", "BT"): {"label": "NOT BETWEEN", "predicate": "NOT BETWEEN"},
+        ("I", "CP"): {"label": "LIKE", "predicate": "LIKE"},
+        ("E", "CP"): {"label": "NOT LIKE", "predicate": "NOT LIKE"},
+    }
+    return semantics.get((sign_token, option_token), {
+        "label": f"{sign_token}/{option_token}",
+        "predicate": option_token or "UNKNOWN",
+    })
+
+
+def build_range_selection_summary(rules: List[Dict[str, str]], source_summary: Dict[str, str]) -> Dict[str, str]:
+    sign_rule = get_rule_by_alias(rules, "SIGN")
+    option_rule = get_rule_by_alias(rules, "OPTION")
+    field_rule = get_rule_by_alias(rules, "FIELDNAME")
+    low_rule = get_rule_by_alias(rules, "LOW")
+    high_rule = get_rule_by_alias(rules, "HIGH")
+    iobj_rule = get_rule_by_alias(rules, "IOBJNM")
+
+    sign_expr = str(sign_rule.get("expr_sql") if sign_rule else "'I'")
+    option_expr = str(option_rule.get("expr_sql") if option_rule else "'EQ'")
+    field_expr = str(field_rule.get("expr_sql") if field_rule else "''")
+    low_expr = str(low_rule.get("expr_sql") if low_rule else "NULL")
+    high_expr = str(high_rule.get("expr_sql") if high_rule else "NULL")
+    iobj_expr = str(iobj_rule.get("expr_sql") if iobj_rule else "NULL")
+    semantics = map_sign_option_to_filter_semantics(sign_expr, option_expr)
+
+    return {
+        "field_name": unwrap_sql_literal(field_expr),
+        "sign": unwrap_sql_literal(sign_expr),
+        "option": unwrap_sql_literal(option_expr),
+        "filter_label": semantics["label"],
+        "predicate": semantics["predicate"],
+        "low_expr": low_expr,
+        "high_expr": high_expr,
+        "iobj_expr": iobj_expr,
+        "source_table": source_summary.get("source_table") or "source_table",
+        "where_clause": source_summary.get("where_clause") or "1 = 1",
+    }
+
+
+def collect_abap_comment_hints(code: str, limit: int = 4) -> List[str]:
+    hints: List[str] = []
+    seen: Set[str] = set()
+    for raw_line in normalize_prog_code_text(code).split("\n"):
+        stripped = raw_line.strip()
+        hint = ""
+        if stripped.startswith("*"):
+            hint = stripped.lstrip("*").strip()
+        elif '"' in raw_line:
+            hint = raw_line.split('"', 1)[1].strip()
+        normalized_hint = normalize_abap_statement_text(hint)
+        normalized_hint = re.sub(r'^["*\s]+', '', normalized_hint).strip()
+        upper_hint = normalized_hint.upper()
+        if re.fullmatch(r"[-=*\s]+", normalized_hint):
+            continue
+        if upper_hint in {"IMPORTING", "EXPORTING", "TABLES", "CHANGING"}:
+            continue
+        if upper_hint.startswith("VALUE(") or "LOKALE SCHNITTSTELLE" in upper_hint:
+            continue
+        if len(normalized_hint) < 4 or normalized_hint in seen:
+            continue
+        seen.add(normalized_hint)
+        hints.append(normalized_hint)
+        if len(hints) >= limit:
+            break
+    return hints
+
+
+def collect_abap_processing_notes(code: str) -> List[str]:
+    notes: List[str] = []
+    seen: Set[str] = set()
+
+    def add_note(text: str) -> None:
+        normalized = normalize_abap_statement_text(text)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            notes.append(normalized)
+
+    normalized_code = normalize_prog_code_text(code).upper()
+    if "CONVERSION_EXIT_ALPHA_INPUT" in normalized_code:
+        add_note("调用 CONVERSION_EXIT_ALPHA_INPUT，对字段做前导零补齐。")
+    if "RSKC_CHAVL_CHECK" in normalized_code:
+        add_note("调用 RSKC_CHAVL_CHECK，校验字符是否满足 BW 合法值规则。")
+    if "ZFMSM_CHANGE_UNALLOWED_CHA" in normalized_code:
+        add_note("调用 ZFMSM_CHANGE_UNALLOWED_CHA，对非法字符进行替换或清洗。")
+    if re.search(r"\bCONDENSE\b", normalized_code):
+        add_note("存在 CONDENSE 处理，说明文本会去首尾并压缩多余空格。")
+    if re.search(r"\bTRANSLATE\b.+\bUPPER\s+CASE\b", normalized_code):
+        add_note("存在大写转换逻辑。")
+    if re.search(r"\bTRANSLATE\b.+\bLOWER\s+CASE\b", normalized_code):
+        add_note("存在小写转换逻辑。")
+    if re.search(r"\bSELECT\b", normalized_code):
+        add_note("存在数据库读取逻辑，实际源表和过滤条件需要结合完整上下文确认。")
+    return notes
+
+
+def rewrite_package_pointer_sql(expression: str, target_table: str) -> str:
+    rewritten = str(expression or "")
+    table_ref = render_sql_identifier(target_table, fallback="TARGET_TABLE")
+    rewritten = re.sub(r"\bresult_fields\.", f"{table_ref}.", rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r"\bsource_fields\.", f"{table_ref}.", rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r"\bresult_package\.", f"{table_ref}.", rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r"\bsource_package\.", f"{table_ref}.", rewritten, flags=re.IGNORECASE)
+    return rewritten
+
+
+def build_abap_location_text(output_table: str, resolution: Dict[str, Any]) -> str:
+    detected_refs = resolution.get("detected_refs") or []
+    matched_entries = resolution.get("matched_entries") or []
+    missing_refs = resolution.get("missing_refs") or []
+    lines = [
+        f"生成表: {output_table}",
+        f"识别对象数: {len(detected_refs)}",
+        f"PROG_CODE 命中: {len(matched_entries)}",
+        f"未命中对象: {len(missing_refs)}",
+    ]
+
+    if detected_refs:
+        lines.append("")
+        lines.append("识别到的对象:")
+        for ref in detected_refs:
+            program_suffix = f" | PROGRAM {ref.get('program')}" if ref.get("program") else ""
+            lines.append(f"- {str(ref.get('type') or '').upper()}: {ref.get('name')}{program_suffix}")
+
+    if matched_entries:
+        lines.append("")
+        lines.append("已递归定位源码:")
+        for entry in matched_entries:
+            match_reason = str(entry.get("matched_by") or "")
+            lines.append(f"- {entry.get('prog_id')} ({match_reason})")
+
+    if missing_refs:
+        lines.append("")
+        lines.append("未命中对象:")
+        for ref in missing_refs:
+            program_suffix = f" | PROGRAM {ref.get('program')}" if ref.get("program") else ""
+            lines.append(f"- {str(ref.get('type') or '').upper()}: {ref.get('name')}{program_suffix}")
+
+    return "\n".join(lines)
+
+
+def build_abap_pseudo_sql(output_table: str, rules: List[Dict[str, str]], resolution: Dict[str, Any], comment_hints: List[str], processing_notes: List[str], full_code: str = "") -> str:
+    target_table = normalize_abap_statement_text(output_table).strip() or "TARGET_TABLE"
+    target_table_sql = render_sql_identifier(target_table, fallback="TARGET_TABLE")
+    matched_entries = resolution.get("matched_entries") or []
+    missing_refs = resolution.get("missing_refs") or []
+    sql_lines: List[str] = [
+        f"/* 生成表: {target_table} */",
+        f"/* 识别对象 {len(resolution.get('detected_refs') or [])} 个，命中 PROG_CODE {len(matched_entries)} 个，未命中 {len(missing_refs)} 个。 */",
+    ]
+
+    if matched_entries:
+        sql_lines.append(f"/* 已递归读取: {', '.join(str(entry.get('prog_id') or '') for entry in matched_entries)} */")
+    if missing_refs:
+        sql_lines.append(f"/* 未命中: {', '.join(str(ref.get('name') or '') for ref in missing_refs)} */")
+    for hint in comment_hints:
+        sql_lines.append(f"/* 源注释: {hint} */")
+
+    merged_code = full_code or "\n\n".join([
+        str(entry.get("prog_code") or "") for entry in matched_entries
+    ])
+    merge_semantics = detect_abap_result_merge_semantics(merged_code)
+    source_summary = extract_select_source_summary(merged_code)
+
+    effective_rules = rules or [{
+        "alias": "PLACEHOLDER_FIELD",
+        "expr_sql": "NULL",
+        "statement": "未识别到明确字段赋值，请结合 ABAP 代码补充映射。",
+    }]
+
+    effective_aliases = {str(rule.get("alias") or "") for rule in effective_rules}
+
+    if source_summary and effective_aliases.issuperset({"SIGN", "OPTION", "FIELDNAME", "LOW"}):
+        range_summary = build_range_selection_summary(effective_rules, source_summary)
+        source_table = range_summary.get("source_table") or "source_table"
+        where_clause = range_summary.get("where_clause") or "1 = 1"
+        field_name = range_summary.get("field_name") or "FIELD"
+        filter_label = range_summary.get("filter_label") or "IN"
+        low_expr = range_summary.get("low_expr") or "NULL"
+        high_expr = range_summary.get("high_expr") or "NULL"
+
+        if range_summary.get("option") in {"EQ", "BT", "CP"} and range_summary.get("sign") in {"I", "E"}:
+            option_token = range_summary.get("option")
+            sign_token = range_summary.get("sign")
+            if option_token == "EQ":
+                predicate = "IN" if sign_token == "I" else "NOT IN"
+                action_label = "IN" if sign_token == "I" else "NOT IN"
+            elif option_token == "BT":
+                predicate = "BETWEEN" if sign_token == "I" else "NOT BETWEEN"
+                action_label = predicate
+            else:
+                predicate = "LIKE" if sign_token == "I" else "NOT LIKE"
+                action_label = predicate
+
+            sql_lines.append("")
+            sql_lines.append(f"/* 给 {field_name} 添加 {action_label} 过滤，值来自 {source_table}，前提是 {where_clause} */")
+            if option_token == "EQ":
+                sql_lines.append(f"{field_name} {predicate} ( SELECT DISTINCT {low_expr} FROM {source_table} WHERE {where_clause} );")
+            elif option_token == "BT":
+                sql_lines.append(f"{field_name} {predicate} ( SELECT DISTINCT {low_expr}, {high_expr} FROM {source_table} WHERE {where_clause} );")
+            else:
+                sql_lines.append(f"{field_name} {predicate} ( SELECT DISTINCT REPLACE({low_expr}, '*', '%') FROM {source_table} WHERE {where_clause} );")
+
+            if merge_semantics.get("has_logsys_lookup") or merge_semantics.get("has_range_insert") or merge_semantics.get("has_range_append"):
+                sql_lines.append("")
+                sql_lines.append(f"/* 若结果对象中已存在 FIELDNAME='{field_name}' 的槽位，则按原索引回写；否则追加新记录。 */")
+
+            if processing_notes:
+                sql_lines.append("")
+                for note in processing_notes:
+                    sql_lines.append(f"/* {note} */")
+            return "\n".join(sql_lines)
+
+        sql_lines.append("")
+        sql_lines.append(f"/* 步骤1：为字段 {field_name} 生成 {filter_label} 选择条件，值来源 {source_table}。 */")
+        sql_lines.append("WITH RANGE_SELECTION AS (")
+        sql_lines.append("  SELECT")
+        for index, rule in enumerate(effective_rules):
+            suffix = "," if index < len(effective_rules) - 1 else ""
+            sql_lines.append(f"    /* {rule.get('statement') or '字段映射'} */")
+            sql_lines.append(f"    {rule.get('expr_sql') or 'NULL'} AS {rule.get('alias') or 'PLACEHOLDER_FIELD'}{suffix}")
+        sql_lines.append(f"  FROM {source_table}")
+        sql_lines.append(f"  WHERE {where_clause}")
+        sql_lines.append(")")
+        sql_lines.append("")
+        sql_lines.append(f"/* 步骤2：直接输出 {field_name} 的选择条件语义。 */")
+        sql_lines.append("SELECT")
+        sql_lines.append(f"  '{field_name}' AS FIELDNAME,")
+        sql_lines.append(f"  '{filter_label}' AS FILTER_TYPE,")
+        sql_lines.append("  LOW AS LOW,")
+        if "HIGH" in effective_aliases:
+            sql_lines.append("  HIGH AS HIGH,")
+        else:
+            sql_lines.append("  NULL AS HIGH,")
+        if "IOBJNM" in effective_aliases:
+            sql_lines.append("  IOBJNM AS IOBJNM")
+        else:
+            sql_lines.append("  NULL AS IOBJNM")
+        sql_lines.append("FROM RANGE_SELECTION;")
+
+        sql_lines.append("")
+        sql_lines.append(f"/* 步骤3：{field_name} 的选择条件解释 */")
+        if range_summary.get("option") == "EQ":
+            sql_lines.append(f"/* {field_name} {filter_label} 单值集合；值来自 {source_table} 的字段表达式 {low_expr}。 */")
+        elif range_summary.get("option") == "BT":
+            sql_lines.append(f"/* {field_name} {filter_label} 区间；下限来自 {low_expr}，上限来自 {high_expr}。 */")
+        elif range_summary.get("option") == "CP":
+            sql_lines.append(f"/* {field_name} {filter_label} 模式匹配；模式值来自 {low_expr}。 */")
+        else:
+            sql_lines.append(f"/* {field_name} 使用 SIGN={range_summary.get('sign')}、OPTION={range_summary.get('option')} 生成选择条件。 */")
+
+        if merge_semantics.get("has_logsys_lookup") or merge_semantics.get("has_range_insert") or merge_semantics.get("has_range_append"):
+            sql_lines.append("")
+            sql_lines.append(f"/* 步骤4：若结果对象中已存在 FIELDNAME='{field_name}' 的槽位，则按原索引回写；否则追加新记录。 */")
+        return "\n".join(sql_lines + ([f"/* {note} */" for note in processing_notes] if processing_notes else []))
+
+    sql_lines.append("")
+    sql_lines.append(f"UPDATE {target_table_sql}")
+    sql_lines.append("SET")
+
+    for index, rule in enumerate(effective_rules):
+        sql_lines.append(f"  /* {rule.get('statement') or '字段映射'} */")
+        suffix = "," if index < len(effective_rules) - 1 else ""
+        sql_lines.append(
+            f"  {render_abap_assignment_target(str(rule.get('target') or rule.get('alias') or 'PLACEHOLDER_FIELD'))} = {rewrite_package_pointer_sql(rule.get('expr_sql') or 'NULL', target_table)}{suffix}"
+        )
+
+    sql_lines.append(";")
+
+    if processing_notes:
+        sql_lines.append("")
+        for note in processing_notes:
+            sql_lines.append(f"/* {note} */")
+
+    return "\n".join(sql_lines)
 
 
 def ensure_dd03l_schema() -> None:
@@ -1204,63 +2332,194 @@ def ensure_rstran_mapping_rule_full_table() -> None:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (
-              `tran_id` VARCHAR(64) NOT NULL,
-              `rule_id` INT NOT NULL,
-              `step_id` INT NOT NULL,
-              `seg_id` VARCHAR(64) NOT NULL DEFAULT '',
-              `pair_index` INT NOT NULL DEFAULT 0,
-              `display_order` INT NOT NULL DEFAULT 0,
-              `source_object` VARCHAR(255) NOT NULL DEFAULT '',
-                            `source_system` VARCHAR(64) NOT NULL DEFAULT '',
-              `target_object` VARCHAR(255) NOT NULL DEFAULT '',
-                            `target_system` VARCHAR(64) NOT NULL DEFAULT '',
-              `source_type` VARCHAR(32) NOT NULL DEFAULT '',
-              `target_type` VARCHAR(32) NOT NULL DEFAULT '',
-              `source_field` VARCHAR(255) NOT NULL DEFAULT '',
-              `target_field` VARCHAR(255) NOT NULL DEFAULT '',
-              `source_field_origin` VARCHAR(32) NOT NULL DEFAULT '',
-              `target_field_origin` VARCHAR(32) NOT NULL DEFAULT '',
-              `source_field_matched` TINYINT(1) NOT NULL DEFAULT 0,
-              `target_field_matched` TINYINT(1) NOT NULL DEFAULT 0,
-              `source_field_is_key` VARCHAR(8) NULL,
-              `target_field_is_key` VARCHAR(8) NULL,
-              `rule_type` VARCHAR(32) NULL,
-              `aggr` VARCHAR(64) NULL,
-              `ruleposit` VARCHAR(64) NOT NULL DEFAULT '',
-              `row_kind` VARCHAR(24) NOT NULL DEFAULT 'mapped',
-              `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              PRIMARY KEY (`tran_id`, `rule_id`, `step_id`, `seg_id`, `pair_index`, `source_field`, `target_field`),
-              KEY `idx_mapping_rule_full_tran` (`tran_id`),
-              KEY `idx_mapping_rule_full_source_obj` (`source_object`, `source_type`),
-              KEY `idx_mapping_rule_full_target_obj` (`target_object`, `target_type`),
-              KEY `idx_mapping_rule_full_source_field` (`tran_id`, `source_field`),
-              KEY `idx_mapping_rule_full_target_field` (`tran_id`, `target_field`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Materialized full field coverage by transformation step';
-            """
-        )
+        if IS_SQLITE:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (
+                  `tran_id` TEXT NOT NULL,
+                  `rule_id` INTEGER NOT NULL,
+                  `step_id` INTEGER NOT NULL,
+                  `seg_id` TEXT NOT NULL DEFAULT '',
+                  `pair_index` INTEGER NOT NULL DEFAULT 0,
+                  `display_order` INTEGER NOT NULL DEFAULT 0,
+                  `source_object` TEXT NOT NULL DEFAULT '',
+                  `source_system` TEXT NOT NULL DEFAULT '',
+                  `target_object` TEXT NOT NULL DEFAULT '',
+                  `target_system` TEXT NOT NULL DEFAULT '',
+                  `source_type` TEXT NOT NULL DEFAULT '',
+                  `target_type` TEXT NOT NULL DEFAULT '',
+                  `source_subtype` TEXT NOT NULL DEFAULT '',
+                  `target_subtype` TEXT NOT NULL DEFAULT '',
+                  `source_field` TEXT NOT NULL DEFAULT '',
+                  `source_match_field` TEXT NOT NULL DEFAULT '',
+                  `source_iobj_name` TEXT NOT NULL DEFAULT '',
+                  `source_fieldtype` TEXT NOT NULL DEFAULT '',
+                  `target_field` TEXT NOT NULL DEFAULT '',
+                  `target_match_field` TEXT NOT NULL DEFAULT '',
+                  `target_iobj_name` TEXT NOT NULL DEFAULT '',
+                  `target_fieldtype` TEXT NOT NULL DEFAULT '',
+                  `source_field_origin` TEXT NOT NULL DEFAULT '',
+                  `target_field_origin` TEXT NOT NULL DEFAULT '',
+                  `source_field_matched` INTEGER NOT NULL DEFAULT 0,
+                  `target_field_matched` INTEGER NOT NULL DEFAULT 0,
+                  `source_field_is_key` TEXT NULL,
+                  `target_field_is_key` TEXT NULL,
+                  `rule_type` TEXT NULL,
+                  `group_type` TEXT NULL,
+                  `aggr` TEXT NULL,
+                  `ruleposit` TEXT NOT NULL DEFAULT '',
+                  `row_kind` TEXT NOT NULL DEFAULT 'mapped',
+                  `updated_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`tran_id`, `rule_id`, `step_id`, `seg_id`, `pair_index`, `source_field`, `target_field`)
+                )
+                """
+            )
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_full_tran` ON `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (`tran_id`)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_full_source_obj` ON `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (`source_object`, `source_type`)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_full_target_obj` ON `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (`target_object`, `target_type`)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_full_source_field` ON `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (`tran_id`, `source_field`)")
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_mapping_rule_full_target_field` ON `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (`tran_id`, `target_field`)")
+        else:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (
+                  `tran_id` VARCHAR(64) NOT NULL,
+                  `rule_id` INT NOT NULL,
+                  `step_id` INT NOT NULL,
+                  `seg_id` VARCHAR(64) NOT NULL DEFAULT '',
+                  `pair_index` INT NOT NULL DEFAULT 0,
+                  `display_order` INT NOT NULL DEFAULT 0,
+                  `source_object` VARCHAR(255) NOT NULL DEFAULT '',
+                  `source_system` VARCHAR(64) NOT NULL DEFAULT '',
+                  `target_object` VARCHAR(255) NOT NULL DEFAULT '',
+                  `target_system` VARCHAR(64) NOT NULL DEFAULT '',
+                  `source_type` VARCHAR(32) NOT NULL DEFAULT '',
+                  `target_type` VARCHAR(32) NOT NULL DEFAULT '',
+                  `source_subtype` VARCHAR(32) NOT NULL DEFAULT '',
+                  `target_subtype` VARCHAR(32) NOT NULL DEFAULT '',
+                  `source_field` VARCHAR(255) NOT NULL DEFAULT '',
+                  `source_match_field` VARCHAR(255) NOT NULL DEFAULT '',
+                  `source_iobj_name` VARCHAR(255) NOT NULL DEFAULT '',
+                  `source_fieldtype` VARCHAR(8) NOT NULL DEFAULT '',
+                  `target_field` VARCHAR(255) NOT NULL DEFAULT '',
+                  `target_match_field` VARCHAR(255) NOT NULL DEFAULT '',
+                  `target_iobj_name` VARCHAR(255) NOT NULL DEFAULT '',
+                  `target_fieldtype` VARCHAR(8) NOT NULL DEFAULT '',
+                  `source_field_origin` VARCHAR(32) NOT NULL DEFAULT '',
+                  `target_field_origin` VARCHAR(32) NOT NULL DEFAULT '',
+                  `source_field_matched` TINYINT(1) NOT NULL DEFAULT 0,
+                  `target_field_matched` TINYINT(1) NOT NULL DEFAULT 0,
+                  `source_field_is_key` VARCHAR(8) NULL,
+                  `target_field_is_key` VARCHAR(8) NULL,
+                  `rule_type` VARCHAR(32) NULL,
+                  `group_type` VARCHAR(32) NULL,
+                  `aggr` VARCHAR(64) NULL,
+                  `ruleposit` VARCHAR(64) NOT NULL DEFAULT '',
+                  `row_kind` VARCHAR(24) NOT NULL DEFAULT 'mapped',
+                  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`tran_id`, `rule_id`, `step_id`, `seg_id`, `pair_index`, `source_field`, `target_field`),
+                  KEY `idx_mapping_rule_full_tran` (`tran_id`),
+                  KEY `idx_mapping_rule_full_source_obj` (`source_object`, `source_type`),
+                  KEY `idx_mapping_rule_full_target_obj` (`target_object`, `target_type`),
+                  KEY `idx_mapping_rule_full_source_field` (`tran_id`, `source_field`),
+                  KEY `idx_mapping_rule_full_target_field` (`tran_id`, `target_field`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Materialized full field coverage by transformation step';
+                """
+            )
 
-        cur.execute(
-            """
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
-            """,
-            (DB_CONFIG["database"], RSTRAN_MAPPING_RULE_FULL_TABLE),
-        )
-        existing_columns = {str(row[0] or "").strip() for row in cur.fetchall()}
+        existing_columns = set(get_table_columns(RSTRAN_MAPPING_RULE_FULL_TABLE))
         required_columns = {
             "display_order": "`display_order` INT NOT NULL DEFAULT 0 AFTER `pair_index`",
             "source_system": "`source_system` VARCHAR(64) NOT NULL DEFAULT '' AFTER `source_object`",
             "target_system": "`target_system` VARCHAR(64) NOT NULL DEFAULT '' AFTER `target_object`",
+            "source_subtype": "`source_subtype` VARCHAR(32) NOT NULL DEFAULT '' AFTER `target_type`",
+            "target_subtype": "`target_subtype` VARCHAR(32) NOT NULL DEFAULT '' AFTER `source_subtype`",
+            "source_match_field": "`source_match_field` VARCHAR(255) NOT NULL DEFAULT '' AFTER `source_field`",
+            "source_iobj_name": "`source_iobj_name` VARCHAR(255) NOT NULL DEFAULT '' AFTER `source_match_field`",
+            "source_fieldtype": "`source_fieldtype` VARCHAR(8) NOT NULL DEFAULT '' AFTER `source_field`",
+            "target_match_field": "`target_match_field` VARCHAR(255) NOT NULL DEFAULT '' AFTER `target_field`",
+            "target_iobj_name": "`target_iobj_name` VARCHAR(255) NOT NULL DEFAULT '' AFTER `target_match_field`",
+            "target_fieldtype": "`target_fieldtype` VARCHAR(8) NOT NULL DEFAULT '' AFTER `target_field`",
+            "group_type": "`group_type` VARCHAR(32) NULL AFTER `rule_type`",
             "row_kind": "`row_kind` VARCHAR(24) NOT NULL DEFAULT 'mapped' AFTER `ruleposit`",
         }
         for column_name, column_sql in required_columns.items():
             if column_name not in existing_columns:
-                cur.execute(f"ALTER TABLE `{RSTRAN_MAPPING_RULE_FULL_TABLE}` ADD COLUMN {column_sql}")
+                if IS_SQLITE:
+                    sqlite_column_sql = {
+                        "display_order": "`display_order` INTEGER NOT NULL DEFAULT 0",
+                        "source_system": "`source_system` TEXT NOT NULL DEFAULT ''",
+                        "target_system": "`target_system` TEXT NOT NULL DEFAULT ''",
+                        "source_subtype": "`source_subtype` TEXT NOT NULL DEFAULT ''",
+                        "target_subtype": "`target_subtype` TEXT NOT NULL DEFAULT ''",
+                        "source_match_field": "`source_match_field` TEXT NOT NULL DEFAULT ''",
+                        "source_iobj_name": "`source_iobj_name` TEXT NOT NULL DEFAULT ''",
+                        "source_fieldtype": "`source_fieldtype` TEXT NOT NULL DEFAULT ''",
+                        "target_match_field": "`target_match_field` TEXT NOT NULL DEFAULT ''",
+                        "target_iobj_name": "`target_iobj_name` TEXT NOT NULL DEFAULT ''",
+                        "target_fieldtype": "`target_fieldtype` TEXT NOT NULL DEFAULT ''",
+                        "group_type": "`group_type` TEXT NULL",
+                        "row_kind": "`row_kind` TEXT NOT NULL DEFAULT 'mapped'",
+                    }[column_name]
+                    cur.execute(f"ALTER TABLE `{RSTRAN_MAPPING_RULE_FULL_TABLE}` ADD COLUMN {sqlite_column_sql}")
+                else:
+                    cur.execute(f"ALTER TABLE `{RSTRAN_MAPPING_RULE_FULL_TABLE}` ADD COLUMN {column_sql}")
 
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def ensure_bw_object_field_inventory_table() -> None:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if IS_SQLITE:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{BW_OBJECT_FIELD_INVENTORY_TABLE}` (
+                  `object_type` TEXT NOT NULL,
+                  `object_name` TEXT NOT NULL,
+                  `object_subtype` TEXT NOT NULL DEFAULT '',
+                  `seg_id` TEXT NOT NULL DEFAULT '',
+                  `field_name` TEXT NOT NULL,
+                  `field_type` TEXT NOT NULL DEFAULT 'F',
+                  `keyflag` TEXT NULL,
+                  `datatype` TEXT NULL,
+                  `length` INTEGER NULL,
+                  `decimals` INTEGER NULL,
+                  `field_order` INTEGER NOT NULL DEFAULT 0,
+                  `source_origin` TEXT NOT NULL DEFAULT '',
+                  `updated_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`object_type`, `object_name`, `object_subtype`, `seg_id`, `field_name`)
+                )
+                """
+            )
+            cur.execute(f"CREATE INDEX IF NOT EXISTS `idx_bw_object_field_inventory_object` ON `{BW_OBJECT_FIELD_INVENTORY_TABLE}` (`object_type`, `object_name`, `object_subtype`)")
+        else:
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS `{BW_OBJECT_FIELD_INVENTORY_TABLE}` (
+                  `object_type` VARCHAR(32) NOT NULL,
+                  `object_name` VARCHAR(255) NOT NULL,
+                  `object_subtype` VARCHAR(32) NOT NULL DEFAULT '',
+                  `seg_id` VARCHAR(64) NOT NULL DEFAULT '',
+                  `field_name` VARCHAR(255) NOT NULL,
+                  `field_type` VARCHAR(8) NOT NULL DEFAULT 'F',
+                  `keyflag` VARCHAR(8) NULL,
+                  `datatype` VARCHAR(32) NULL,
+                  `length` INT NULL,
+                  `decimals` INT NULL,
+                  `field_order` INT NOT NULL DEFAULT 0,
+                  `source_origin` VARCHAR(64) NOT NULL DEFAULT '',
+                  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (`object_type`, `object_name`, `object_subtype`, `seg_id`, `field_name`),
+                  KEY `idx_bw_object_field_inventory_object` (`object_type`, `object_name`, `object_subtype`),
+                  KEY `idx_bw_object_field_inventory_field` (`object_type`, `object_name`, `field_name`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Materialized BW object field inventory';
+                """
+            )
         conn.commit()
     finally:
         cur.close()
@@ -1269,6 +2528,16 @@ def ensure_rstran_mapping_rule_full_table() -> None:
 
 def normalize_field_name(value: object) -> str:
     return str(value or "").strip().upper()
+
+
+def build_empty_segment_inventory() -> Dict[str, object]:
+    return {
+        "ordered": [],
+        "field_set": set(),
+        "key_by_field": {},
+        "type_by_field": {},
+        "metadata_by_field": {},
+    }
 
 
 def parse_rsds_identity(raw_name: object, raw_system: object = None) -> Tuple[str, str]:
@@ -2019,82 +3288,6 @@ def resolve_field_text_from_lookup(lookup: Optional[Dict[Tuple[str, str], str]],
     return str(lookup.get((seg_key, normalized_field)) or lookup.get(("", normalized_field)) or "").strip()
 
 
-def enrich_supplemented_mapping_rows_with_field_metadata(
-    rows: List[Dict[str, object]],
-    source_type: str,
-    target_type: str,
-) -> List[Dict[str, object]]:
-    if not rows:
-        return rows
-
-    rsiobj_type_lookup = fetch_rsiobj_type_lookup()
-    rsiobj_names = set(rsiobj_type_lookup.keys())
-    if not rsiobj_names:
-        return rows
-
-    def apply_field_metadata(row: Dict[str, object], field_key: str, field_type_key: str, object_type_value: str) -> None:
-        current_field = row.get(field_key)
-        if not normalize_field_name(current_field):
-            return
-        if str(row.get(field_type_key) or "").strip():
-            return
-
-        canonical_field, _iobj_name, field_type = infer_field_metadata_with_rsiobj(
-            current_field,
-            object_type_value,
-            rsiobj_names,
-            rsiobj_type_lookup,
-        )
-        if canonical_field and normalize_type_code(object_type_value) in {"ADSO", "ODSO", "IOBJ"}:
-            row[field_key] = canonical_field
-        row[field_type_key] = field_type or "F"
-
-    for row in rows:
-        rule_value = str(row.get("rule") or row.get("rule_type") or "").strip()
-        if rule_value:
-            continue
-        apply_field_metadata(row, "source_field", "source_fieldtype", source_type)
-        apply_field_metadata(row, "target_field", "target_fieldtype", target_type)
-
-    return rows
-
-
-def apply_unified_mapping_row_field_types(
-    rows: List[Dict[str, object]],
-    source_type: str = "",
-    target_type: str = "",
-) -> List[Dict[str, object]]:
-    if not rows:
-        return rows
-
-    rsiobj_type_lookup = fetch_rsiobj_type_lookup()
-    rsiobj_names = set(rsiobj_type_lookup.keys())
-    if not rsiobj_names:
-        return rows
-
-    for row in rows:
-        source_field = row.get("source_field")
-        if normalize_field_name(source_field):
-            _canonical_source_field, _source_iobj_name, source_field_type = infer_field_metadata_with_rsiobj(
-                source_field,
-                source_type,
-                rsiobj_names,
-                rsiobj_type_lookup,
-            )
-            row["source_fieldtype"] = source_field_type or "F"
-        target_field = row.get("target_field")
-        if normalize_field_name(target_field):
-            _canonical_target_field, _target_iobj_name, target_field_type = infer_field_metadata_with_rsiobj(
-                target_field,
-                target_type,
-                rsiobj_names,
-                rsiobj_type_lookup,
-            )
-            row["target_fieldtype"] = target_field_type or "F"
-
-    return rows
-
-
 def enrich_mapping_rows_with_field_text(
     rows: List[Dict[str, object]],
     source_object: str,
@@ -2107,9 +3300,6 @@ def enrich_mapping_rows_with_field_text(
     target_lookup: Optional[Dict[Tuple[str, str], str]] = None,
     rsiobj_type_lookup: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, object]]:
-    rows = enrich_supplemented_mapping_rows_with_field_metadata(rows, source_type, target_type)
-    rows = apply_unified_mapping_row_field_types(rows, source_type, target_type)
-
     source_field_names = {
         normalize_field_name(row.get("source_field"))
         for row in rows
@@ -2145,27 +3335,13 @@ def enrich_mapping_rows_with_field_text(
         ) or {}
     )
     needed_iobj_names: Set[str] = set()
-    resolved_rsiobj_type_lookup = rsiobj_type_lookup if rsiobj_type_lookup is not None else fetch_rsiobj_type_lookup()
-    rsiobj_names = set(resolved_rsiobj_type_lookup.keys())
     for row in rows:
-        if is_rsiobj_backed_field_type(row.get("source_fieldtype")):
-            _source_field, source_iobj_name, _source_field_type = infer_field_metadata_with_rsiobj(
-                row.get("source_field"),
-                source_type,
-                rsiobj_names,
-                resolved_rsiobj_type_lookup,
-            )
-            if source_iobj_name:
-                needed_iobj_names.add(source_iobj_name)
-        if is_rsiobj_backed_field_type(row.get("target_fieldtype")):
-            _target_field, target_iobj_name, _target_field_type = infer_field_metadata_with_rsiobj(
-                row.get("target_field"),
-                target_type,
-                rsiobj_names,
-                resolved_rsiobj_type_lookup,
-            )
-            if target_iobj_name:
-                needed_iobj_names.add(target_iobj_name)
+        source_iobj_name = normalize_field_name(row.get("source_iobj_name"))
+        target_iobj_name = normalize_field_name(row.get("target_iobj_name"))
+        if source_iobj_name:
+            needed_iobj_names.add(source_iobj_name)
+        if target_iobj_name:
+            needed_iobj_names.add(target_iobj_name)
 
     iobj_text_lookup = fetch_rsiobj_text_lookup(sorted(needed_iobj_names)) if needed_iobj_names else {}
     if not resolved_source_lookup and not resolved_target_lookup and not iobj_text_lookup:
@@ -2175,24 +3351,22 @@ def enrich_mapping_rows_with_field_text(
         seg_id = row.get("seg_id")
         row["source_text"] = resolve_field_text_from_lookup(resolved_source_lookup, seg_id, row.get("source_field"))
         row["target_text"] = resolve_field_text_from_lookup(resolved_target_lookup, seg_id, row.get("target_field"))
-        if not str(row.get("source_text") or "").strip() and is_rsiobj_backed_field_type(row.get("source_fieldtype")):
-            _source_field, source_iobj_name, _source_field_type = infer_field_metadata_with_rsiobj(
-                row.get("source_field"),
-                source_type,
-                rsiobj_names,
-                resolved_rsiobj_type_lookup,
-            )
+        source_iobj_name = normalize_field_name(row.get("source_iobj_name"))
+        target_iobj_name = normalize_field_name(row.get("target_iobj_name"))
+        if not str(row.get("source_text") or "").strip() and source_iobj_name:
             row["source_text"] = str(iobj_text_lookup.get(source_iobj_name) or "").strip()
-        if not str(row.get("target_text") or "").strip() and is_rsiobj_backed_field_type(row.get("target_fieldtype")):
-            _target_field, target_iobj_name, _target_field_type = infer_field_metadata_with_rsiobj(
-                row.get("target_field"),
-                target_type,
-                rsiobj_names,
-                resolved_rsiobj_type_lookup,
-            )
+        if not str(row.get("target_text") or "").strip() and target_iobj_name:
             row["target_text"] = str(iobj_text_lookup.get(target_iobj_name) or "").strip()
 
     return rows
+
+
+def mapping_row_match_field(row: Dict[str, object], field_key: str) -> str:
+    if field_key == "source_field":
+        return normalize_field_name(row.get("source_match_field")) or normalize_field_name(row.get("source_field"))
+    if field_key == "target_field":
+        return normalize_field_name(row.get("target_match_field")) or normalize_field_name(row.get("target_field"))
+    return normalize_field_name(row.get(field_key))
 
 
 def fetch_all_materialized_tran_mapping_rows() -> List[Dict[str, object]]:
@@ -2205,7 +3379,7 @@ def fetch_all_materialized_tran_mapping_rows() -> List[Dict[str, object]]:
         cur.execute(
             f"""
             SELECT tran_id, rule_id, step_id, seg_id, pair_index, ruleposit,
-                   source_field, target_field, target_keyflag, rule_type, aggr
+                   source_field, target_field, target_keyflag, rule_type, group_type, aggr
             FROM `{RSTRAN_MAPPING_RULE_TABLE}`
             ORDER BY tran_id, rule_id, step_id, seg_id, pair_index
             """
@@ -2215,7 +3389,7 @@ def fetch_all_materialized_tran_mapping_rows() -> List[Dict[str, object]]:
         cur.close()
         conn.close()
 
-    return apply_unified_mapping_row_field_types(normalize_tran_mapping_rows(rows))
+    return normalize_tran_mapping_rows(rows)
 
 
 def fetch_active_tran_metadata() -> Dict[str, Dict[str, str]]:
@@ -2226,13 +3400,15 @@ def fetch_active_tran_metadata() -> Dict[str, Dict[str, str]]:
     source_col = "SOURCE" if "SOURCE" in rstran_columns else ("DATASOURCE" if "DATASOURCE" in rstran_columns else "")
     if not source_col:
         return {}
+    source_subtype_sql = ", SOURCESUBTYPE" if "SOURCESUBTYPE" in rstran_columns else ", '' AS SOURCESUBTYPE"
+    target_subtype_sql = ", TARGETSUBTYPE" if "TARGETSUBTYPE" in rstran_columns else ", '' AS TARGETSUBTYPE"
 
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
             f"""
-            SELECT TRANID, SOURCETYPE, {source_col} AS SOURCE, SOURCESYS, TARGETTYPE, TARGETNAME
+            SELECT TRANID, SOURCETYPE, {source_col} AS SOURCE, SOURCESYS, TARGETTYPE, TARGETNAME{source_subtype_sql}{target_subtype_sql}
             FROM rstran
             WHERE OBJVERS = 'A'
             """
@@ -2265,6 +3441,8 @@ def fetch_active_tran_metadata() -> Dict[str, Dict[str, str]]:
             "tran_id": tran_id,
             "source_type": source_type,
             "target_type": target_type,
+            "source_subtype": normalize_iobj_subtype(row.get("SOURCESUBTYPE")),
+            "target_subtype": normalize_iobj_subtype(row.get("TARGETSUBTYPE")),
             "source_object": source_name,
             "source_system": source_system,
             "target_object": target_name,
@@ -2356,17 +3534,13 @@ def fetch_rsds_field_inventory_for_pairs(
         object_inventory = inventory.setdefault((datasource, logsys), {})
         seg_inventory = object_inventory.setdefault(
             seg_id,
-            {
-                "ordered": [],
-                "field_set": set(),
-                "key_by_field": {},
-                "metadata_by_field": {},
-            },
+            build_empty_segment_inventory(),
         )
         keyflag = str(row.get("KEYFIELD") or "").strip()
         seg_inventory["ordered"].append((field_name, keyflag))
         seg_inventory["field_set"].add(field_name)
         seg_inventory["key_by_field"][field_name] = keyflag
+        seg_inventory["type_by_field"][field_name] = "F"
         seg_inventory["metadata_by_field"][field_name] = {
             "datatype": str(row.get("DATATYPE") or "").strip().upper(),
             "length": _normalize_inventory_numeric_value(row.get("LENG")),
@@ -2468,23 +3642,270 @@ def resolve_rsiobj_field_type(iobj_name: object, rsiobj_type_lookup: Dict[str, s
     return str(rsiobj_type_lookup.get(normalized_iobj_name) or "F").strip().upper() or "F"
 
 
-def normalize_adso_field_name_with_rsiobj(field_name: object, rsiobj_names: Set[str]) -> Tuple[str, str]:
+def resolve_rsiobj_field_type_with_default_i(iobj_name: object, rsiobj_type_lookup: Dict[str, str]) -> str:
+    normalized_iobj_name = normalize_field_name(iobj_name)
+    if not normalized_iobj_name:
+        return "F"
+    resolved_field_type = resolve_rsiobj_field_type(normalized_iobj_name, rsiobj_type_lookup)
+    return resolved_field_type if is_rsiobj_backed_field_type(resolved_field_type) else "I"
+
+
+def build_bw_field_aliases(field_name: object) -> Set[str]:
+    normalized_field = normalize_field_name(field_name)
+    if not normalized_field:
+        return set()
+
+    aliases = {normalized_field}
+    if normalized_field.startswith("/BIC/"):
+        aliases.add(normalized_field[5:])
+    else:
+        aliases.add(f"/BIC/{normalized_field}")
+    if normalized_field.startswith("0") and len(normalized_field) > 1:
+        aliases.add(normalized_field[1:])
+    return {alias for alias in aliases if alias}
+
+
+def merge_object_field_lookup_entry(
+    lookup: Dict[str, Tuple[str, str, str]],
+    alias: str,
+    entry: Tuple[str, str, str],
+    exact_aliases: Set[str],
+) -> None:
+    existing_entry = lookup.get(alias)
+    if existing_entry is None:
+        lookup[alias] = entry
+        return
+
+    existing_is_iobj = is_rsiobj_backed_field_type(existing_entry[2])
+    new_is_iobj = is_rsiobj_backed_field_type(entry[2])
+    if new_is_iobj and not existing_is_iobj:
+        lookup[alias] = entry
+        return
+    if existing_is_iobj and not new_is_iobj:
+        return
+    if alias in exact_aliases:
+        lookup[alias] = entry
+
+
+def parse_adso_xml_field_lookup(
+    xml_ui: object,
+    rsiobj_type_lookup: Dict[str, str],
+) -> Dict[str, Tuple[str, str, str]]:
+    raw_xml = str(xml_ui or "").strip()
+    if not raw_xml:
+        return {}
+
+    try:
+        xml_bytes = bytes.fromhex(raw_xml)
+    except (ValueError, binascii.Error):
+        return {}
+
+    try:
+        root = ET.fromstring(xml_bytes.decode("utf-8", errors="replace"))
+    except ET.ParseError:
+        return {}
+
+    lookup: Dict[str, Tuple[str, str, str]] = {}
+    for element in root.iter():
+        if not str(element.tag or "").endswith("element"):
+            continue
+        canonical_field = normalize_field_name(element.attrib.get("name"))
+        if not canonical_field:
+            continue
+        iobj_name = normalize_field_name(element.attrib.get("infoObjectName"))
+        field_type = resolve_rsiobj_field_type_with_default_i(iobj_name, rsiobj_type_lookup) if iobj_name else "F"
+        entry = (canonical_field, iobj_name, field_type or "F")
+        aliases = build_bw_field_aliases(canonical_field)
+        if iobj_name:
+            aliases.update(build_bw_field_aliases(iobj_name))
+        exact_aliases = {alias for alias in {canonical_field, iobj_name} if alias}
+        for alias in aliases:
+            merge_object_field_lookup_entry(lookup, alias, entry, exact_aliases)
+    return lookup
+
+
+def fetch_adso_xml_field_lookup_for_objects(
+    object_names: List[object],
+    rsiobj_type_lookup: Dict[str, str] | None = None,
+) -> Dict[str, Dict[str, Tuple[str, str, str]]]:
+    normalized_objects: List[str] = []
+    seen_objects: Set[str] = set()
+    for object_name in object_names:
+        normalized_object = normalize_bw_object_lookup(object_name)
+        if not normalized_object or normalized_object in seen_objects:
+            continue
+        seen_objects.add(normalized_object)
+        normalized_objects.append(normalized_object)
+
+    if not normalized_objects:
+        return {}
+
+    resolved_rsiobj_type_lookup = rsiobj_type_lookup or fetch_rsiobj_type_lookup()
+    lookup_by_object: Dict[str, Dict[str, Tuple[str, str, str]]] = {}
+    uncached_objects: List[str] = []
+    for normalized_object in normalized_objects:
+        cached_lookup = _ADSO_XML_FIELD_LOOKUP_CACHE.get(normalized_object)
+        if cached_lookup is None:
+            uncached_objects.append(normalized_object)
+            continue
+        lookup_by_object[normalized_object] = cached_lookup
+
+    if uncached_objects:
+        raw_xml_by_object: Dict[str, object] = {}
+        if table_exists("rsoadso"):
+            placeholders = ", ".join(["%s"] * len(uncached_objects))
+            conn = get_conn()
+            cur = conn.cursor(dictionary=True)
+            try:
+                cur.execute(
+                    f"""
+                    SELECT ADSONM, XML_UI
+                    FROM rsoadso
+                    WHERE COALESCE(NULLIF(TRIM(OBJVERS), ''), 'A') = 'A'
+                      AND UPPER(TRIM(ADSONM)) IN ({placeholders})
+                    """,
+                    tuple(uncached_objects),
+                )
+                rows = cur.fetchall()
+            finally:
+                cur.close()
+                conn.close()
+
+            for row in rows:
+                normalized_object = normalize_bw_object_lookup(row.get("ADSONM"))
+                if not normalized_object or normalized_object in raw_xml_by_object:
+                    continue
+                raw_xml_by_object[normalized_object] = row.get("XML_UI")
+
+        for normalized_object in uncached_objects:
+            lookup = parse_adso_xml_field_lookup(
+                raw_xml_by_object.get(normalized_object),
+                resolved_rsiobj_type_lookup,
+            )
+            _ADSO_XML_FIELD_LOOKUP_CACHE[normalized_object] = lookup
+            lookup_by_object[normalized_object] = lookup
+
+    return lookup_by_object
+
+
+def fetch_adso_xml_field_lookup_for_object(
+    object_name: object,
+    rsiobj_type_lookup: Dict[str, str] | None = None,
+) -> Dict[str, Tuple[str, str, str]]:
+    normalized_object = normalize_bw_object_lookup(object_name)
+    if not normalized_object:
+        return {}
+    return fetch_adso_xml_field_lookup_for_objects([normalized_object], rsiobj_type_lookup).get(normalized_object, {})
+
+
+def resolve_adso_field_metadata(
+    field_name: object,
+    object_name: object,
+    rsiobj_type_lookup: Dict[str, str] | None = None,
+) -> Tuple[str, str, str] | None:
+    normalized_field = normalize_field_name(field_name)
+    normalized_object = normalize_bw_object_lookup(object_name)
+    if not normalized_field or not normalized_object:
+        return None
+    field_lookup = fetch_adso_xml_field_lookup_for_object(normalized_object, rsiobj_type_lookup)
+    return field_lookup.get(normalized_field)
+
+
+def fetch_trcs_field_lookup_for_object(
+    object_name: object,
+    rsiobj_type_lookup: Dict[str, str] | None = None,
+) -> Dict[str, Tuple[str, str, str]]:
+    normalized_object = normalize_bw_object_lookup(object_name)
+    if not normalized_object:
+        return {}
+    if normalized_object in _TRCS_FIELD_LOOKUP_CACHE:
+        return _TRCS_FIELD_LOOKUP_CACHE[normalized_object]
+    if not table_exists("rsksfieldnew"):
+        _TRCS_FIELD_LOOKUP_CACHE[normalized_object] = {}
+        return {}
+
+    resolved_rsiobj_type_lookup = rsiobj_type_lookup or fetch_rsiobj_type_lookup()
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT FIELDNM, IOBJNM, SEGID, POSIT
+            FROM rsksfieldnew
+            WHERE COALESCE(NULLIF(TRIM(OBJVERS), ''), 'A') = 'A'
+              AND UPPER(TRIM(ISOURCE)) = UPPER(TRIM(%s))
+            ORDER BY CAST(COALESCE(NULLIF(TRIM(SEGID), ''), '0') AS UNSIGNED),
+                     CAST(COALESCE(NULLIF(TRIM(POSIT), ''), '0') AS UNSIGNED),
+                     FIELDNM,
+                     IOBJNM
+            """,
+            (normalized_object,),
+        )
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+    lookup: Dict[str, Tuple[str, str, str]] = {}
+    for row in rows:
+        field_name = normalize_field_name(row.get("FIELDNM"))
+        iobj_name = normalize_field_name(row.get("IOBJNM"))
+        canonical_field = iobj_name or field_name
+        if not canonical_field:
+            continue
+        field_type = resolve_rsiobj_field_type_with_default_i(iobj_name, resolved_rsiobj_type_lookup) if iobj_name else "F"
+        entry = (canonical_field, iobj_name, field_type or "F")
+        aliases = build_bw_field_aliases(field_name)
+        if iobj_name:
+            aliases.update(build_bw_field_aliases(iobj_name))
+        exact_aliases = {alias for alias in {canonical_field, iobj_name} if alias}
+        for alias in aliases:
+            merge_object_field_lookup_entry(lookup, alias, entry, exact_aliases)
+
+    _TRCS_FIELD_LOOKUP_CACHE[normalized_object] = lookup
+    return lookup
+
+
+def resolve_trcs_field_metadata(
+    field_name: object,
+    object_name: object,
+    rsiobj_type_lookup: Dict[str, str] | None = None,
+) -> Tuple[str, str, str] | None:
+    normalized_field = normalize_field_name(field_name)
+    normalized_object = normalize_bw_object_lookup(object_name)
+    if not normalized_field or not normalized_object:
+        return None
+    field_lookup = fetch_trcs_field_lookup_for_object(normalized_object, rsiobj_type_lookup)
+    return field_lookup.get(normalized_field)
+
+
+def normalize_adso_field_name_with_rsiobj(
+    field_name: object,
+    rsiobj_names: Set[str],
+    adso_field_lookup: Optional[Dict[str, Tuple[str, str, str]]] = None,
+) -> Tuple[str, str]:
     normalized_field = str(field_name or "").strip().upper()
     if not normalized_field:
         return "", ""
 
+    if adso_field_lookup:
+        matched_entry = adso_field_lookup.get(normalized_field)
+        if matched_entry:
+            canonical_field, _iobj_name, field_type = matched_entry
+            return canonical_field, field_type or "F"
+
     if normalized_field.startswith("/BIC/"):
         candidate = normalized_field[5:]
         if candidate in rsiobj_names:
-            return candidate, "I"
+            return candidate, resolve_rsiobj_field_type_with_default_i(candidate, fetch_rsiobj_type_lookup())
         # Not an InfoObject: return original DD03L field name (without /BIC/ prefix)
         return candidate, "F"
 
     iobj_candidate = f"0{normalized_field}"
     if iobj_candidate in rsiobj_names:
-        return iobj_candidate, "I"
+        return iobj_candidate, resolve_rsiobj_field_type_with_default_i(iobj_candidate, fetch_rsiobj_type_lookup())
     if normalized_field in rsiobj_names:
-        return normalized_field, "I"
+        return normalized_field, resolve_rsiobj_field_type_with_default_i(normalized_field, fetch_rsiobj_type_lookup())
     # Not an InfoObject: return original DD03L field name
     return normalized_field, "F"
 
@@ -2494,6 +3915,7 @@ def infer_field_metadata_with_rsiobj(
     object_type: object,
     rsiobj_names: Set[str],
     rsiobj_type_lookup: Dict[str, str] | None = None,
+    object_name: object = "",
 ) -> Tuple[str, str, str]:
     normalized_field = normalize_field_name(field_name)
     normalized_type = normalize_type_code(object_type)
@@ -2501,10 +3923,29 @@ def infer_field_metadata_with_rsiobj(
     if not normalized_field:
         return "", "", ""
 
+    if normalized_type == "ADSO":
+        matched_adso_field = resolve_adso_field_metadata(normalized_field, object_name, resolved_rsiobj_type_lookup)
+        if matched_adso_field:
+            return matched_adso_field
+
+    if normalized_type == "TRCS":
+        matched_trcs_field = resolve_trcs_field_metadata(normalized_field, object_name, resolved_rsiobj_type_lookup)
+        if matched_trcs_field:
+            return matched_trcs_field
+
     if normalized_type in {"ADSO", "ODSO", "IOBJ"}:
-        canonical_field, matched_field_type = normalize_adso_field_name_with_rsiobj(normalized_field, rsiobj_names)
-        iobj_name = canonical_field if matched_field_type == "I" and canonical_field in rsiobj_names else ""
-        field_type = resolve_rsiobj_field_type(iobj_name, resolved_rsiobj_type_lookup) if iobj_name else "F"
+        adso_field_lookup = (
+            fetch_adso_xml_field_lookup_for_object(object_name, resolved_rsiobj_type_lookup)
+            if normalized_type == "ADSO" and normalize_bw_object_lookup(object_name)
+            else None
+        )
+        canonical_field, matched_field_type = normalize_adso_field_name_with_rsiobj(
+            normalized_field,
+            rsiobj_names,
+            adso_field_lookup,
+        )
+        iobj_name = canonical_field if is_rsiobj_backed_field_type(matched_field_type) and canonical_field in rsiobj_names else ""
+        field_type = matched_field_type or (resolve_rsiobj_field_type(iobj_name, resolved_rsiobj_type_lookup) if iobj_name else "F")
         return canonical_field, iobj_name, field_type or "F"
 
     if normalized_field in rsiobj_names:
@@ -2524,34 +3965,51 @@ def infer_field_metadata_with_rsiobj(
     return normalized_field, "", "F"
 
 
-def canonicalize_object_field_for_matching(field_name: object, object_type: object, rsiobj_names: Set[str] | None = None) -> str:
+def canonicalize_object_field_for_matching(
+    field_name: object,
+    object_type: object,
+    rsiobj_names: Set[str] | None = None,
+    object_name: object = "",
+) -> str:
     normalized_field = normalize_field_name(field_name)
     normalized_type = normalize_type_code(object_type)
     if not normalized_field:
         return ""
+    if normalized_type == "ADSO":
+        matched_adso_field = resolve_adso_field_metadata(normalized_field, object_name)
+        if matched_adso_field:
+            return matched_adso_field[0]
+    if normalized_type == "TRCS":
+        matched_trcs_field = resolve_trcs_field_metadata(normalized_field, object_name)
+        if matched_trcs_field:
+            return matched_trcs_field[0]
     if normalized_type in {"ADSO", "ODSO"} and rsiobj_names is not None:
         canonical_field, _field_type = normalize_adso_field_name_with_rsiobj(normalized_field, rsiobj_names)
         return canonical_field
     return normalized_field
 
 
-def build_dd03l_object_inventory(rows: List[Dict[str, object]], rsiobj_names: Set[str] | None = None) -> Dict[str, Dict[str, object]]:
-    seg_inventory = {
-        "ordered": [],
-        "field_set": set(),
-        "key_by_field": {},
-        "metadata_by_field": {},
-    }
+def build_dd03l_object_inventory(
+    rows: List[Dict[str, object]],
+    rsiobj_names: Set[str] | None = None,
+    adso_field_lookup: Optional[Dict[str, Tuple[str, str, str]]] = None,
+) -> Dict[str, Dict[str, object]]:
+    seg_inventory = build_empty_segment_inventory()
     resolved_rsiobj_names = rsiobj_names or set()
     use_rsiobj_matching = rsiobj_names is not None
     seen_fields: Set[str] = set()
     for row in rows:
         if use_rsiobj_matching:
-            field_name, _field_type = normalize_adso_field_name_with_rsiobj(row.get("FIELDNAME"), resolved_rsiobj_names)
+            field_name, field_type = normalize_adso_field_name_with_rsiobj(
+                row.get("FIELDNAME"),
+                resolved_rsiobj_names,
+                adso_field_lookup,
+            )
             if not field_name:
                 continue
         else:
             field_name = derive_adso_field_name_from_dd03l(row.get("FIELDNAME"))
+            field_type = "F"
             if not is_dd03l_adso_business_field(field_name):
                 continue
         if field_name in seen_fields:
@@ -2561,6 +4019,7 @@ def build_dd03l_object_inventory(rows: List[Dict[str, object]], rsiobj_names: Se
         seg_inventory["ordered"].append((field_name, keyflag))
         seg_inventory["field_set"].add(field_name)
         seg_inventory["key_by_field"][field_name] = keyflag
+        seg_inventory["type_by_field"][field_name] = field_type or "F"
         seg_inventory["metadata_by_field"][field_name] = {
             "datatype": str(row.get("DATATYPE") or "").strip().upper(),
             "length": _normalize_inventory_numeric_value(row.get("LENG")),
@@ -2702,13 +4161,19 @@ def fetch_adso_field_inventory_from_dd03l(
         return {}
 
     resolved_activate_data = activate_data_by_object or fetch_rsoadso_activate_data_by_object(normalized_objects)
-    resolved_rsiobj_names = rsiobj_names if rsiobj_names is not None else fetch_rsiobj_name_set()
+    resolved_rsiobj_type_lookup = fetch_rsiobj_type_lookup()
+    resolved_rsiobj_names = rsiobj_names if rsiobj_names is not None else set(resolved_rsiobj_type_lookup.keys())
     suffixes_by_object = {
         object_name: {"2" if resolved_activate_data.get(object_name, "") == "X" else "1"}
         for object_name in normalized_objects
     }
     candidate_tables = build_dd03l_object_tabname_candidates(normalized_objects, suffixes_by_object)
     rows = fetch_dd03l_rows_for_tabnames([table for table_names in candidate_tables.values() for table in table_names])
+
+    adso_field_lookup_by_object = fetch_adso_xml_field_lookup_for_objects(
+        normalized_objects,
+        resolved_rsiobj_type_lookup,
+    )
 
     inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
     table_to_object = {
@@ -2728,6 +4193,7 @@ def fetch_adso_field_inventory_from_dd03l(
         object_inventory = build_dd03l_object_inventory(
             inventory_by_object.get(object_name, []),
             resolved_rsiobj_names,
+            adso_field_lookup_by_object.get(object_name, {}),
         )
         if not object_inventory:
             continue
@@ -2801,6 +4267,7 @@ def fetch_trcs_field_inventory(object_names: List[str]) -> Dict[str, Dict[str, D
     if not normalized_objects:
         return {}
 
+    resolved_rsiobj_type_lookup = fetch_rsiobj_type_lookup()
     placeholders = ", ".join(["%s"] * len(normalized_objects))
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
@@ -2824,17 +4291,14 @@ def fetch_trcs_field_inventory(object_names: List[str]) -> Dict[str, Dict[str, D
         conn.close()
 
     inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
+    lookup_by_object: Dict[str, Dict[str, Tuple[str, str, str]]] = defaultdict(dict)
     seen: Set[Tuple[str, str, str]] = set()
     for row in rows:
         isource = normalize_bw_object_lookup(row.get("ISOURCE"))
         seg_id = str(row.get("SEGID") or "").strip()
-        field_type = str(row.get("TYPE") or "").strip().upper()
         iobj_name = normalize_field_name(row.get("IOBJNM"))
         field_name_raw = row.get("FIELDNM")
-        if field_type == "F" or not iobj_name:
-            field_name = normalize_field_name(field_name_raw)
-        else:
-            field_name = iobj_name
+        field_name = iobj_name or normalize_field_name(field_name_raw)
         if not isource or not field_name:
             continue
         dedup_key = (isource, seg_id, field_name)
@@ -2845,42 +4309,67 @@ def fetch_trcs_field_inventory(object_names: List[str]) -> Dict[str, Dict[str, D
         object_inventory = inventory.setdefault(isource, {})
         seg_inventory = object_inventory.setdefault(
             seg_id,
-            {
-                "ordered": [],
-                "field_set": set(),
-                "key_by_field": {},
-                "metadata_by_field": {},
-            },
+            build_empty_segment_inventory(),
         )
         keyflag = str(row.get("KEYFLAG") or "").strip()
+        field_type = "I" if iobj_name else "F"
         seg_inventory["ordered"].append((field_name, keyflag))
         seg_inventory["field_set"].add(field_name)
         seg_inventory["key_by_field"][field_name] = keyflag
+        seg_inventory["type_by_field"][field_name] = field_type
         seg_inventory["metadata_by_field"][field_name] = {
             "datatype": str(row.get("DATATYPE") or "").strip().upper(),
             "length": _normalize_inventory_numeric_value(row.get("LENG")),
             "decimals": _normalize_inventory_numeric_value(row.get("DECIMALS")),
         }
 
+        entry = (
+            field_name,
+            iobj_name,
+            resolve_rsiobj_field_type_with_default_i(iobj_name, resolved_rsiobj_type_lookup) if iobj_name else "F",
+        )
+        aliases = build_bw_field_aliases(row.get("FIELDNM"))
+        if iobj_name:
+            aliases.update(build_bw_field_aliases(iobj_name))
+        exact_aliases = {alias for alias in {field_name, iobj_name} if alias}
+        object_lookup = lookup_by_object[isource]
+        for alias in aliases:
+            merge_object_field_lookup_entry(object_lookup, alias, entry, exact_aliases)
+
+    for object_name in normalized_objects:
+        _TRCS_FIELD_LOOKUP_CACHE[object_name] = lookup_by_object.get(object_name, {})
+
     return inventory
 
 
 def build_iobj_dd03l_table_candidates(object_name: str) -> List[str]:
+    return build_iobj_dd03l_table_candidates_for_subtype(object_name, "")
+
+
+def build_iobj_dd03l_table_candidates_for_subtype(object_name: str, subtype: object = "") -> List[str]:
     normalized_name = normalize_bw_object_lookup(object_name)
     if not normalized_name:
         return []
 
+    normalized_subtype = normalize_iobj_subtype(subtype)
     if normalized_name.startswith("0"):
         base_name = normalized_name[1:]
-        prefixes = ("/BI0/P", "/BI0/T", "/BI0/H")
+        prefix = "/BI0/"
     else:
         base_name = normalized_name
-        prefixes = ("/BIC/P", "/BIC/T", "/BIC/H")
+        prefix = "/BIC/"
+
+    if normalized_subtype == "ATTR":
+        suffixes = ("P",)
+    elif normalized_subtype == "TEXT":
+        suffixes = ("T",)
+    else:
+        suffixes = ("P", "T", "H")
 
     candidates: List[str] = []
     seen: Set[str] = set()
-    for prefix in prefixes:
-        table_name = f"{prefix}{base_name}"
+    for suffix in suffixes:
+        table_name = f"{prefix}{suffix}{base_name}"
         if table_name not in seen:
             seen.add(table_name)
             candidates.append(table_name)
@@ -2900,21 +4389,29 @@ def normalize_iobj_dd03l_field_name(field_name: object) -> str:
     return f"0{normalized_field}"
 
 
-def fetch_iobj_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, Dict[str, Dict[str, object]]]:
+def fetch_iobj_field_inventory_from_dd03l(object_entries: List[object]) -> Dict[Tuple[str, str], Dict[str, Dict[str, object]]]:
     if not table_exists("dd03l"):
         return {}
 
-    normalized_objects = []
-    seen_objects: Set[str] = set()
+    normalized_entries: List[Tuple[str, str]] = []
+    seen_entries: Set[Tuple[str, str]] = set()
     all_candidate_tables: List[str] = []
     seen_tables: Set[str] = set()
-    for object_name in object_names:
+    for entry in object_entries:
+        if isinstance(entry, (tuple, list)):
+            object_name = entry[0] if len(entry) > 0 else ""
+            object_subtype = entry[1] if len(entry) > 1 else ""
+        else:
+            object_name = entry
+            object_subtype = ""
         normalized_name = normalize_bw_object_lookup(object_name)
-        if not normalized_name or normalized_name in seen_objects:
+        normalized_subtype = normalize_iobj_subtype(object_subtype)
+        key = (normalized_name, normalized_subtype)
+        if not normalized_name or key in seen_entries:
             continue
-        seen_objects.add(normalized_name)
-        normalized_objects.append(normalized_name)
-        for table_name in build_iobj_dd03l_table_candidates(normalized_name):
+        seen_entries.add(key)
+        normalized_entries.append(key)
+        for table_name in build_iobj_dd03l_table_candidates_for_subtype(normalized_name, normalized_subtype):
             if table_name not in seen_tables:
                 seen_tables.add(table_name)
                 all_candidate_tables.append(table_name)
@@ -2948,16 +4445,11 @@ def fetch_iobj_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
         if table_name:
             rows_by_table[table_name].append(row)
 
-    inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
-    for object_name in normalized_objects:
-        seg_inventory = {
-            "ordered": [],
-            "field_set": set(),
-            "key_by_field": {},
-            "metadata_by_field": {},
-        }
+    inventory: Dict[Tuple[str, str], Dict[str, Dict[str, object]]] = {}
+    for object_name, object_subtype in normalized_entries:
+        seg_inventory = build_empty_segment_inventory()
         seen_fields: Set[str] = set()
-        for table_name in build_iobj_dd03l_table_candidates(object_name):
+        for table_name in build_iobj_dd03l_table_candidates_for_subtype(object_name, object_subtype):
             for row in rows_by_table.get(table_name, []):
                 field_name = normalize_iobj_dd03l_field_name(row.get("FIELDNAME"))
                 if not field_name or field_name in seen_fields:
@@ -2967,13 +4459,14 @@ def fetch_iobj_field_inventory_from_dd03l(object_names: List[str]) -> Dict[str, 
                 seg_inventory["ordered"].append((field_name, keyflag))
                 seg_inventory["field_set"].add(field_name)
                 seg_inventory["key_by_field"][field_name] = keyflag
+                seg_inventory["type_by_field"][field_name] = "I"
                 seg_inventory["metadata_by_field"][field_name] = {
                     "datatype": str(row.get("DATATYPE") or "").strip().upper(),
                     "length": _normalize_inventory_numeric_value(row.get("LENG")),
                     "decimals": _normalize_inventory_numeric_value(row.get("DECIMALS")),
                 }
         if seg_inventory["ordered"]:
-            inventory[object_name] = {"": seg_inventory}
+            inventory[(object_name, object_subtype)] = {"": seg_inventory}
 
     return inventory
 
@@ -2982,10 +4475,11 @@ def get_supported_inventory_for_object(
     object_name: str,
     object_system: str,
     object_type: str,
+    object_subtype: str,
     rsds_inventory: Dict[Tuple[str, str], Dict[str, Dict[str, object]]],
     dd03l_inventory: Dict[str, Dict[str, Dict[str, object]]],
     trcs_inventory: Dict[str, Dict[str, Dict[str, object]]],
-    iobj_inventory: Dict[str, Dict[str, Dict[str, object]]],
+    iobj_inventory: Dict[Tuple[str, str], Dict[str, Dict[str, object]]],
 ) -> Tuple[Dict[str, Dict[str, object]], bool, str]:
     normalized_type = normalize_type_code(object_type)
     if normalized_type == "RSDS":
@@ -2994,12 +4488,16 @@ def get_supported_inventory_for_object(
         return inventory, bool(inventory), "rsdssegfd"
     if normalized_type in {"ADSO", "ODSO"}:
         inventory = dd03l_inventory.get(normalize_bw_object_lookup(object_name), {})
-        return inventory, bool(inventory), "dd03l"
+        return inventory, bool(inventory), "rsoadso.xml_ui" if normalized_type == "ADSO" else "dd03l"
     if normalized_type == "TRCS":
         inventory = trcs_inventory.get(normalize_bw_object_lookup(object_name), {})
         return inventory, bool(inventory), "rsksfieldnew"
     if normalized_type == "IOBJ":
-        inventory = iobj_inventory.get(normalize_bw_object_lookup(object_name), {})
+        normalized_object = normalize_bw_object_lookup(object_name)
+        normalized_subtype = normalize_iobj_subtype(object_subtype)
+        inventory = iobj_inventory.get((normalized_object, normalized_subtype), {})
+        if not inventory and normalized_subtype:
+            inventory = iobj_inventory.get((normalized_object, ""), {})
         return inventory, bool(inventory), "dd03l"
     return {}, False, ""
 
@@ -3022,14 +4520,311 @@ def inventory_keyflag(inventory_by_seg: Dict[str, Dict[str, object]], seg_id: st
     return str((seg_inventory.get("key_by_field") or {}).get(normalized_field) or "").strip()
 
 
+def inventory_field_type(inventory_by_seg: Dict[str, Dict[str, object]], seg_id: str, field_name: str) -> str:
+    normalized_field = normalize_field_name(field_name)
+    if not normalized_field:
+        return ""
+    seg_key = str(seg_id or "").strip()
+    seg_inventory = inventory_by_seg.get(seg_key) or inventory_by_seg.get("") or {}
+    return str((seg_inventory.get("type_by_field") or {}).get(normalized_field) or "").strip().upper()
+
+
+def build_inventory_from_materialized_rows(rows: List[Dict[str, object]]) -> Dict[str, Dict[str, object]]:
+    inventory: Dict[str, Dict[str, object]] = {}
+    for row in rows:
+        seg_id = str(row.get("seg_id") or "").strip()
+        field_name = normalize_field_name(row.get("field_name"))
+        if not field_name:
+            continue
+        seg_inventory = inventory.setdefault(seg_id, build_empty_segment_inventory())
+        if field_name in (seg_inventory.get("field_set") or set()):
+            continue
+        keyflag = str(row.get("keyflag") or "").strip()
+        seg_inventory["ordered"].append((field_name, keyflag))
+        seg_inventory["field_set"].add(field_name)
+        seg_inventory["key_by_field"][field_name] = keyflag
+        seg_inventory["type_by_field"][field_name] = str(row.get("field_type") or "").strip().upper() or "F"
+        seg_inventory["metadata_by_field"][field_name] = {
+            "datatype": str(row.get("datatype") or "").strip().upper(),
+            "length": _normalize_inventory_numeric_value(row.get("length")),
+            "decimals": _normalize_inventory_numeric_value(row.get("decimals")),
+        }
+    return inventory
+
+
+def fetch_materialized_object_field_inventory_rows(
+    object_type: str,
+    object_names: List[str] | None = None,
+    object_entries: List[Tuple[str, str]] | None = None,
+) -> List[Dict[str, object]]:
+    normalized_type = normalize_type_code(object_type)
+    if not normalized_type or not table_exists(BW_OBJECT_FIELD_INVENTORY_TABLE):
+        return []
+
+    filters: List[object] = [normalized_type]
+    where_sql = "WHERE object_type = %s"
+
+    if object_entries is not None:
+        normalized_entries: List[Tuple[str, str]] = []
+        seen_entries: Set[Tuple[str, str]] = set()
+        for object_name, object_subtype in object_entries:
+            entry = (normalize_bw_object_lookup(object_name), normalize_iobj_subtype(object_subtype))
+            if not entry[0] or entry in seen_entries:
+                continue
+            seen_entries.add(entry)
+            normalized_entries.append(entry)
+        if not normalized_entries:
+            return []
+        where_sql += " AND (" + " OR ".join(["(object_name = %s AND object_subtype = %s)"] * len(normalized_entries)) + ")"
+        for object_name, object_subtype in normalized_entries:
+            filters.extend([object_name, object_subtype])
+    else:
+        normalized_objects: List[str] = []
+        seen_objects: Set[str] = set()
+        for object_name in object_names or []:
+            normalized_name = normalize_bw_object_lookup(object_name)
+            if not normalized_name or normalized_name in seen_objects:
+                continue
+            seen_objects.add(normalized_name)
+            normalized_objects.append(normalized_name)
+        if not normalized_objects:
+            return []
+        placeholders = ", ".join(["%s"] * len(normalized_objects))
+        where_sql += f" AND object_name IN ({placeholders})"
+        filters.extend(normalized_objects)
+
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT object_name, object_subtype, seg_id, field_name, field_type, keyflag, datatype, length, decimals, field_order
+            FROM `{BW_OBJECT_FIELD_INVENTORY_TABLE}`
+            {where_sql}
+            ORDER BY object_name, object_subtype, seg_id, field_order, field_name
+            """,
+            tuple(filters),
+        )
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def fetch_materialized_dd03l_field_inventory(object_type: str, object_names: List[str]) -> Dict[str, Dict[str, Dict[str, object]]]:
+    rows = fetch_materialized_object_field_inventory_rows(object_type, object_names=object_names)
+    inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
+    rows_by_object: Dict[str, List[Dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        object_name = normalize_bw_object_lookup(row.get("object_name"))
+        if object_name:
+            rows_by_object[object_name].append(row)
+    for object_name, object_rows in rows_by_object.items():
+        object_inventory = build_inventory_from_materialized_rows(object_rows)
+        if object_inventory:
+            inventory[object_name] = object_inventory
+    return inventory
+
+
+def fetch_materialized_trcs_field_inventory(object_names: List[str]) -> Dict[str, Dict[str, Dict[str, object]]]:
+    return fetch_materialized_dd03l_field_inventory("TRCS", object_names)
+
+
+def fetch_materialized_iobj_field_inventory(object_entries: List[object]) -> Dict[Tuple[str, str], Dict[str, Dict[str, object]]]:
+    normalized_entries: List[Tuple[str, str]] = []
+    for entry in object_entries:
+        if isinstance(entry, (tuple, list)):
+            object_name = entry[0] if len(entry) > 0 else ""
+            object_subtype = entry[1] if len(entry) > 1 else ""
+        else:
+            object_name = entry
+            object_subtype = ""
+        normalized_entries.append((normalize_bw_object_lookup(object_name), normalize_iobj_subtype(object_subtype)))
+
+    rows = fetch_materialized_object_field_inventory_rows("IOBJ", object_entries=normalized_entries)
+    inventory: Dict[Tuple[str, str], Dict[str, Dict[str, object]]] = {}
+    rows_by_object: Dict[Tuple[str, str], List[Dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        object_name = normalize_bw_object_lookup(row.get("object_name"))
+        object_subtype = normalize_iobj_subtype(row.get("object_subtype"))
+        if object_name:
+            rows_by_object[(object_name, object_subtype)].append(row)
+    for object_key, object_rows in rows_by_object.items():
+        object_inventory = build_inventory_from_materialized_rows(object_rows)
+        if object_inventory:
+            inventory[object_key] = object_inventory
+    return inventory
+
+
+def append_materialized_inventory_rows(
+    insert_rows: List[Tuple[object, ...]],
+    object_type: str,
+    object_name: str,
+    object_subtype: str,
+    inventory_by_seg: Dict[str, Dict[str, object]],
+    source_origin: str,
+) -> None:
+    normalized_type = normalize_type_code(object_type)
+    normalized_name = normalize_bw_object_lookup(object_name)
+    normalized_subtype = normalize_iobj_subtype(object_subtype) if normalized_type == "IOBJ" else ""
+    if not normalized_type or not normalized_name:
+        return
+
+    for seg_id, seg_inventory in inventory_by_seg.items():
+        metadata_by_field = seg_inventory.get("metadata_by_field") or {}
+        type_by_field = seg_inventory.get("type_by_field") or {}
+        for field_order, (field_name, keyflag) in enumerate(seg_inventory.get("ordered") or [], start=1):
+            metadata = metadata_by_field.get(field_name) or {}
+            insert_rows.append(
+                (
+                    normalized_type,
+                    normalized_name,
+                    normalized_subtype,
+                    str(seg_id or "").strip(),
+                    normalize_field_name(field_name),
+                    str(type_by_field.get(field_name) or "F").strip().upper() or "F",
+                    str(keyflag or "").strip(),
+                    str(metadata.get("datatype") or "").strip().upper(),
+                    metadata.get("length"),
+                    metadata.get("decimals"),
+                    field_order,
+                    source_origin,
+                )
+            )
+
+
+def rebuild_bw_object_field_inventory_table(
+    tran_metadata: Optional[Dict[str, Dict[str, object]]] = None,
+) -> Dict[str, int]:
+    ensure_bw_object_field_inventory_table()
+    resolved_tran_metadata = tran_metadata or fetch_active_tran_metadata()
+
+    adso_objects = sorted(
+        {
+            normalize_bw_object_lookup(meta.get("source_object", ""))
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("source_type")) == "ADSO"
+        }
+        | {
+            normalize_bw_object_lookup(meta.get("target_object", ""))
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("target_type")) == "ADSO"
+        }
+    )
+    odso_objects = sorted(
+        {
+            normalize_bw_object_lookup(meta.get("source_object", ""))
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("source_type")) == "ODSO"
+        }
+        | {
+            normalize_bw_object_lookup(meta.get("target_object", ""))
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("target_type")) == "ODSO"
+        }
+    )
+    trcs_objects = sorted(
+        {
+            normalize_bw_object_lookup(meta.get("source_object", ""))
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("source_type")) == "TRCS"
+        }
+        | {
+            normalize_bw_object_lookup(meta.get("target_object", ""))
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("target_type")) == "TRCS"
+        }
+    )
+    iobj_objects = sorted(
+        {
+            (
+                normalize_bw_object_lookup(meta.get("source_object", "")),
+                normalize_iobj_subtype(meta.get("source_subtype", "")),
+            )
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("source_type")) == "IOBJ"
+            and normalize_bw_object_lookup(meta.get("source_object", ""))
+        }
+        | {
+            (
+                normalize_bw_object_lookup(meta.get("target_object", "")),
+                normalize_iobj_subtype(meta.get("target_subtype", "")),
+            )
+            for meta in resolved_tran_metadata.values()
+            if normalize_type_code(meta.get("target_type")) == "IOBJ"
+            and normalize_bw_object_lookup(meta.get("target_object", ""))
+        }
+    )
+
+    activate_data_by_object = fetch_rsoadso_activate_data_by_object(adso_objects) if adso_objects else {}
+    rsiobj_names = fetch_rsiobj_name_set() if (adso_objects or odso_objects) else set()
+    odso_inventory = fetch_odso_field_inventory_from_dd03l(odso_objects, rsiobj_names=rsiobj_names) if odso_objects else {}
+    adso_inventory = fetch_adso_field_inventory_from_dd03l(
+        adso_objects,
+        activate_data_by_object=activate_data_by_object,
+        rsiobj_names=rsiobj_names,
+    ) if adso_objects else {}
+    trcs_inventory = fetch_trcs_field_inventory(trcs_objects) if trcs_objects else {}
+    iobj_inventory = fetch_iobj_field_inventory_from_dd03l(iobj_objects) if iobj_objects else {}
+
+    insert_rows: List[Tuple[object, ...]] = []
+    for object_name, inventory in odso_inventory.items():
+        append_materialized_inventory_rows(insert_rows, "ODSO", object_name, "", inventory, "dd03l")
+    for object_name, inventory in adso_inventory.items():
+        append_materialized_inventory_rows(insert_rows, "ADSO", object_name, "", inventory, "rsoadso.xml_ui")
+    for object_name, inventory in trcs_inventory.items():
+        append_materialized_inventory_rows(insert_rows, "TRCS", object_name, "", inventory, "rsksfieldnew")
+    for (object_name, object_subtype), inventory in iobj_inventory.items():
+        append_materialized_inventory_rows(insert_rows, "IOBJ", object_name, object_subtype, inventory, "dd03l")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if IS_SQLITE:
+            cur.execute(f"DELETE FROM `{BW_OBJECT_FIELD_INVENTORY_TABLE}`")
+        else:
+            cur.execute(f"TRUNCATE TABLE `{BW_OBJECT_FIELD_INVENTORY_TABLE}`")
+        if insert_rows:
+            cur.executemany(
+                f"""
+                INSERT INTO `{BW_OBJECT_FIELD_INVENTORY_TABLE}` (
+                    object_type,
+                    object_name,
+                    object_subtype,
+                    seg_id,
+                    field_name,
+                    field_type,
+                    keyflag,
+                    datatype,
+                    length,
+                    decimals,
+                    field_order,
+                    source_origin
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                insert_rows,
+            )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    return {
+        "inserted_rows": len(insert_rows),
+        "object_count": len(odso_inventory) + len(adso_inventory) + len(trcs_inventory) + len(iobj_inventory),
+        "odso_count": len(odso_inventory),
+        "adso_count": len(adso_inventory),
+        "trcs_count": len(trcs_inventory),
+        "iobj_count": len(iobj_inventory),
+    }
+
+
 def inventory_field_metadata(
     inventory_by_seg: Dict[str, Dict[str, object]],
     seg_id: str,
     field_name: str,
-    object_type: str = "",
-    rsiobj_names: Set[str] | None = None,
 ) -> Dict[str, object]:
-    normalized_field = canonicalize_object_field_for_matching(field_name, object_type, rsiobj_names)
+    normalized_field = normalize_field_name(field_name)
     if not normalized_field:
         return {"datatype": "", "length": None, "decimals": None}
     seg_key = str(seg_id or "").strip()
@@ -3049,6 +4844,8 @@ def enrich_mapping_rows_with_inventory_field_metadata(
     target_inventory: Dict[str, Dict[str, object]],
     target_type: str,
     rsiobj_names: Set[str] | None = None,
+    source_object: str = "",
+    target_object: str = "",
 ) -> List[Dict[str, object]]:
     if not rows:
         return rows
@@ -3058,16 +4855,12 @@ def enrich_mapping_rows_with_inventory_field_metadata(
         source_meta = inventory_field_metadata(
             source_inventory,
             seg_id,
-            str(row.get("source_field") or "").strip(),
-            source_type,
-            rsiobj_names,
+            mapping_row_match_field(row, "source_field"),
         )
         target_meta = inventory_field_metadata(
             target_inventory,
             seg_id,
-            str(row.get("target_field") or "").strip(),
-            target_type,
-            rsiobj_names,
+            mapping_row_match_field(row, "target_field"),
         )
         row["source_datatype"] = source_meta.get("datatype")
         row["source_length"] = source_meta.get("length")
@@ -3101,12 +4894,10 @@ def inventory_unique_field_name_set(inventory_by_seg: Dict[str, Dict[str, object
 def rows_unique_field_name_set(
     rows: List[Dict[str, object]],
     field_key: str,
-    object_type: str = "",
-    rsiobj_names: Set[str] | None = None,
 ) -> Set[str]:
     field_names: Set[str] = set()
     for row in rows:
-        field_name = canonicalize_object_field_for_matching(row.get(field_key), object_type, rsiobj_names)
+        field_name = mapping_row_match_field(row, field_key)
         if field_name:
             field_names.add(field_name)
     return field_names
@@ -3115,6 +4906,7 @@ def rows_unique_field_name_set(
 def build_inventory_reference_meta(
     object_name: str,
     object_type: str,
+    object_subtype: str,
     inventory_origin: str,
     activate_data_by_object: Dict[str, str],
 ) -> Dict[str, str]:
@@ -3128,11 +4920,27 @@ def build_inventory_reference_meta(
         "adso_table_name": "",
     }
 
-    if origin == "dd03l" and normalized_type == "ADSO" and normalized_object:
+    if origin in {"dd03l", "rsoadso.xml_ui"} and normalized_type == "ADSO" and normalized_object:
         suffix = "2" if activate_data_by_object.get(normalized_object, "") == "X" else "1"
-        result["inventory_label"] = f"DD03L A-table {suffix}"
+        result["inventory_label"] = "RSOADSO XML_UI" if origin == "rsoadso.xml_ui" else f"DD03L A-table {suffix}"
         result["adso_table_suffix"] = suffix
         result["adso_table_name"] = f"/BIC/A{normalized_object}{suffix}"
+        return result
+
+    if normalized_type == "IOBJ" and normalized_object:
+        normalized_subtype = normalize_iobj_subtype(object_subtype)
+        if origin == "dd03l" and normalized_subtype:
+            result["inventory_label"] = f"DD03L {normalized_subtype}"
+        if normalized_subtype:
+            table_candidates = build_iobj_dd03l_table_candidates_for_subtype(normalized_object, normalized_subtype)
+            if table_candidates:
+                result["adso_table_name"] = table_candidates[0]
+        else:
+            result["adso_table_name"] = "--"
+        return result
+
+    if normalized_type not in {"", "ADSO", "IOBJ"}:
+        result["adso_table_name"] = "--"
         return result
 
     if origin == "dd03l":
@@ -3151,11 +4959,12 @@ def build_object_field_diagnostics(
     object_name: str,
     object_system: str,
     object_type: str,
+    object_subtype: str,
     object_display_name_map: Dict[str, str],
     rsds_inventory: Dict[Tuple[str, str], Dict[str, Dict[str, object]]],
     dd03l_inventory: Dict[str, Dict[str, Dict[str, object]]],
     trcs_inventory: Dict[str, Dict[str, Dict[str, object]]],
-    iobj_inventory: Dict[str, Dict[str, Dict[str, object]]],
+    iobj_inventory: Dict[Tuple[str, str], Dict[str, Dict[str, object]]],
     activate_data_by_object: Dict[str, str],
     rsiobj_names: Set[str] | None = None,
 ) -> Dict[str, object]:
@@ -3166,16 +4975,17 @@ def build_object_field_diagnostics(
         normalized_object,
         normalized_system,
         normalized_type,
+        object_subtype,
         rsds_inventory,
         dd03l_inventory,
         trcs_inventory,
         iobj_inventory,
     )
-    row_fields = rows_unique_field_name_set(rows, field_key, normalized_type, rsiobj_names)
+    row_fields = rows_unique_field_name_set(rows, field_key)
     inventory_fields = inventory_unique_field_name_set(inventory) if comparison_available else set()
     missing_fields = inventory_fields - row_fields
     extra_fields = row_fields - inventory_fields
-    reference_meta = build_inventory_reference_meta(normalized_object, normalized_type, inventory_origin, activate_data_by_object)
+    reference_meta = build_inventory_reference_meta(normalized_object, normalized_type, object_subtype, inventory_origin, activate_data_by_object)
 
     return {
         "object": normalized_object,
@@ -3196,9 +5006,10 @@ def build_object_field_diagnostics(
 
 def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
     ensure_rstran_mapping_rule_full_table()
-    base_result = rebuild_rstran_mapping_rule_table()
-
     tran_metadata = fetch_active_tran_metadata()
+    base_rows = fetch_normalized_tran_mapping_rows()
+    base_result = rebuild_rstran_mapping_rule_table(base_rows)
+    inventory_result = rebuild_bw_object_field_inventory_table(tran_metadata)
     adso_objects = sorted(
         {
             normalize_bw_object_lookup(meta.get("source_object", ""))
@@ -3237,22 +5048,29 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
     )
     iobj_objects = sorted(
         {
-            normalize_bw_object_lookup(meta.get("source_object", ""))
+            (
+                normalize_bw_object_lookup(meta.get("source_object", "")),
+                normalize_iobj_subtype(meta.get("source_subtype", "")),
+            )
             for meta in tran_metadata.values()
             if normalize_type_code(meta.get("source_type")) == "IOBJ"
+            and normalize_bw_object_lookup(meta.get("source_object", ""))
         }
         | {
-            normalize_bw_object_lookup(meta.get("target_object", ""))
+            (
+                normalize_bw_object_lookup(meta.get("target_object", "")),
+                normalize_iobj_subtype(meta.get("target_subtype", "")),
+            )
             for meta in tran_metadata.values()
             if normalize_type_code(meta.get("target_type")) == "IOBJ"
+            and normalize_bw_object_lookup(meta.get("target_object", ""))
         }
     )
-    base_rows = fetch_all_materialized_tran_mapping_rows()
     rsds_inventory = fetch_rsds_field_inventory()
-    dd03l_inventory = fetch_odso_field_inventory_from_dd03l(odso_objects)
-    dd03l_inventory.update(fetch_adso_field_inventory_from_dd03l(adso_objects))
-    trcs_inventory = fetch_trcs_field_inventory(trcs_objects)
-    iobj_inventory = fetch_iobj_field_inventory_from_dd03l(iobj_objects)
+    dd03l_inventory = fetch_materialized_dd03l_field_inventory("ODSO", odso_objects)
+    dd03l_inventory.update(fetch_materialized_dd03l_field_inventory("ADSO", adso_objects))
+    trcs_inventory = fetch_materialized_trcs_field_inventory(trcs_objects)
+    iobj_inventory = fetch_materialized_iobj_field_inventory(iobj_objects)
     rsiobj_names = fetch_rsiobj_name_set() if adso_objects else set()
 
     rows_by_tran: Dict[str, List[Dict[str, object]]] = defaultdict(list)
@@ -3263,17 +5081,22 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
 
     all_tran_ids = sorted(set(tran_metadata.keys()) | set(rows_by_tran.keys()))
     insert_rows: List[Tuple[object, ...]] = []
-    insert_batch_size = 2000
+    insert_batch_size = 10000
     mapped_rows = 0
     source_completed_rows = 0
     target_completed_rows = 0
     touched_transforms = 0
+    empty_field_set: Set[str] = set()
+    empty_key_lookup: Dict[str, str] = {}
+    empty_type_lookup: Dict[str, str] = {}
 
     for tran_id in all_tran_ids:
         tran_meta = tran_metadata.get(tran_id) or {
             "tran_id": tran_id,
             "source_type": "",
             "target_type": "",
+            "source_subtype": "",
+            "target_subtype": "",
             "source_object": "",
             "source_system": "",
             "target_object": "",
@@ -3283,25 +5106,39 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
         tran_rows = rows_by_tran.get(tran_id, [])
         default_step_id = int(tran_rows[0].get("step_id") or 0) if tran_rows else 0
         display_order = 0
+        source_object = str(tran_meta.get("source_object") or "").strip()
+        source_system = str(tran_meta.get("source_system") or "").strip()
+        target_object = str(tran_meta.get("target_object") or "").strip()
+        target_system = str(tran_meta.get("target_system") or "").strip()
+        source_type = str(tran_meta.get("source_type") or "").strip()
+        target_type = str(tran_meta.get("target_type") or "").strip()
+        source_subtype = str(tran_meta.get("source_subtype") or "").strip()
+        target_subtype = str(tran_meta.get("target_subtype") or "").strip()
 
         source_inventory, source_supported, source_inventory_origin = get_supported_inventory_for_object(
-            tran_meta.get("source_object", ""),
-            tran_meta.get("source_system", ""),
-            tran_meta.get("source_type", ""),
+            source_object,
+            source_system,
+            source_type,
+            source_subtype,
             rsds_inventory,
             dd03l_inventory,
             trcs_inventory,
             iobj_inventory,
         )
         target_inventory, target_supported, target_inventory_origin = get_supported_inventory_for_object(
-            tran_meta.get("target_object", ""),
-            tran_meta.get("target_system", ""),
-            tran_meta.get("target_type", ""),
+            target_object,
+            target_system,
+            target_type,
+            target_subtype,
             rsds_inventory,
             dd03l_inventory,
             trcs_inventory,
             iobj_inventory,
         )
+        source_default_inventory = source_inventory.get("") or {}
+        target_default_inventory = target_inventory.get("") or {}
+        source_match_cache: Dict[str, str] = {}
+        target_match_cache: Dict[str, str] = {}
 
         mapped_source_keys: Set[Tuple[str, str]] = set()
         mapped_target_keys: Set[Tuple[str, str]] = set()
@@ -3310,8 +5147,36 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
             seg_id = str(row.get("seg_id") or "").strip()
             source_field = normalize_field_name(row.get("source_field"))
             target_field = normalize_field_name(row.get("target_field"))
-            source_match_field = canonicalize_object_field_for_matching(source_field, tran_meta.get("source_type", ""), rsiobj_names)
-            target_match_field = canonicalize_object_field_for_matching(target_field, tran_meta.get("target_type", ""), rsiobj_names)
+            source_match_field = source_match_cache.get(source_field)
+            if source_match_field is None:
+                source_match_field = canonicalize_object_field_for_matching(
+                    source_field,
+                    source_type,
+                    rsiobj_names,
+                    source_object,
+                )
+                source_match_cache[source_field] = source_match_field
+            target_match_field = target_match_cache.get(target_field)
+            if target_match_field is None:
+                target_match_field = canonicalize_object_field_for_matching(
+                    target_field,
+                    target_type,
+                    rsiobj_names,
+                    target_object,
+                )
+                target_match_cache[target_field] = target_match_field
+            source_seg_inventory = source_inventory.get(seg_id) or source_default_inventory
+            target_seg_inventory = target_inventory.get(seg_id) or target_default_inventory
+            source_field_set = source_seg_inventory.get("field_set") or empty_field_set
+            target_field_set = target_seg_inventory.get("field_set") or empty_field_set
+            source_key_by_field = source_seg_inventory.get("key_by_field") or empty_key_lookup
+            target_key_by_field = target_seg_inventory.get("key_by_field") or empty_key_lookup
+            source_type_by_field = source_seg_inventory.get("type_by_field") or empty_type_lookup
+            target_type_by_field = target_seg_inventory.get("type_by_field") or empty_type_lookup
+            source_field_type = str(source_type_by_field.get(source_match_field) or "").strip().upper() if source_supported and source_match_field else ""
+            target_field_type = str(target_type_by_field.get(target_match_field) or "").strip().upper() if target_supported and target_match_field else ""
+            source_iobj_name = source_match_field if is_rsiobj_backed_field_type(source_field_type) else ""
+            target_iobj_name = target_match_field if is_rsiobj_backed_field_type(target_field_type) else ""
 
             if source_match_field:
                 mapped_source_keys.add((seg_id, source_match_field))
@@ -3319,12 +5184,12 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
                 mapped_target_keys.add((seg_id, target_match_field))
 
             if source_field and source_supported:
-                source_field_matched = 1 if inventory_contains_field(source_inventory, seg_id, source_match_field) else 0
+                source_field_matched = 1 if source_match_field in source_field_set else 0
             else:
                 source_field_matched = 1 if source_field else 0
 
             if target_field and target_supported:
-                target_field_matched = 1 if inventory_contains_field(target_inventory, seg_id, target_match_field) else 0
+                target_field_matched = 1 if target_match_field in target_field_set else 0
             else:
                 target_field_matched = 1 if target_field else 0
 
@@ -3338,21 +5203,30 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
                     seg_id,
                     int(row.get("pair_index") or 0),
                     display_order,
-                    tran_meta.get("source_object", ""),
-                    tran_meta.get("source_system", ""),
-                    tran_meta.get("target_object", ""),
-                    tran_meta.get("target_system", ""),
-                    tran_meta.get("source_type", ""),
-                    tran_meta.get("target_type", ""),
+                    source_object,
+                    source_system,
+                    target_object,
+                    target_system,
+                    source_type,
+                    target_type,
+                    source_subtype,
+                    target_subtype,
                     source_field,
+                    source_match_field,
+                    source_iobj_name,
+                    source_field_type,
                     target_field,
+                    target_match_field,
+                    target_iobj_name,
+                    target_field_type,
                     "rstranfield" if source_field else "",
                     "rstranfield" if target_field else "",
                     source_field_matched,
                     target_field_matched,
-                    inventory_keyflag(source_inventory, seg_id, source_field) if source_supported else "",
-                    str(row.get("target_key") or "").strip() or (inventory_keyflag(target_inventory, seg_id, target_field) if target_supported else ""),
+                    str(source_key_by_field.get(source_match_field) or "").strip() if source_supported else "",
+                    str(row.get("target_key") or "").strip() or (str(target_key_by_field.get(target_match_field) or "").strip() if target_supported else ""),
                     str(row.get("rule") or "").strip(),
+                    str(row.get("group_type") or "").strip(),
                     str(row.get("aggr") or "").strip(),
                     str(row.get("ruleposit") or "").strip(),
                     row_kind,
@@ -3360,13 +5234,16 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
             )
             mapped_rows += 1
 
+        mapped_source_any_fields = {field_name for _seg_id, field_name in mapped_source_keys}
         source_pair_index: Dict[str, int] = defaultdict(int)
         for seg_id, seg_inventory in source_inventory.items():
+            type_by_field = seg_inventory.get("type_by_field") or empty_type_lookup
             for field_name, keyflag in seg_inventory.get("ordered") or []:
-                if inventory_field_already_mapped(mapped_source_keys, seg_id, field_name):
+                if (seg_id, field_name) in mapped_source_keys or (not seg_id and field_name in mapped_source_any_fields):
                     continue
                 source_pair_index[seg_id] += 1
                 display_order += 1
+                field_type = str(type_by_field.get(field_name) or "").strip().upper()
                 insert_rows.append(
                     (
                         tran_id,
@@ -3375,13 +5252,21 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
                         seg_id,
                         source_pair_index[seg_id],
                         display_order,
-                        tran_meta.get("source_object", ""),
-                        tran_meta.get("source_system", ""),
-                        tran_meta.get("target_object", ""),
-                        tran_meta.get("target_system", ""),
-                        tran_meta.get("source_type", ""),
-                        tran_meta.get("target_type", ""),
+                        source_object,
+                        source_system,
+                        target_object,
+                        target_system,
+                        source_type,
+                        target_type,
+                        source_subtype,
+                        target_subtype,
                         field_name,
+                        field_name,
+                        field_name if is_rsiobj_backed_field_type(field_type) else "",
+                        field_type,
+                        "",
+                        "",
+                        "",
                         "",
                         source_inventory_origin,
                         "",
@@ -3392,18 +5277,22 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
                         "",
                         "",
                         "",
+                        "",
                         "source_only",
                     )
                 )
                 source_completed_rows += 1
 
+        mapped_target_any_fields = {field_name for _seg_id, field_name in mapped_target_keys}
         target_pair_index: Dict[str, int] = defaultdict(int)
         for seg_id, seg_inventory in target_inventory.items():
+            type_by_field = seg_inventory.get("type_by_field") or empty_type_lookup
             for field_name, keyflag in seg_inventory.get("ordered") or []:
-                if inventory_field_already_mapped(mapped_target_keys, seg_id, field_name):
+                if (seg_id, field_name) in mapped_target_keys or (not seg_id and field_name in mapped_target_any_fields):
                     continue
                 target_pair_index[seg_id] += 1
                 display_order += 1
+                field_type = str(type_by_field.get(field_name) or "").strip().upper()
                 insert_rows.append(
                     (
                         tran_id,
@@ -3412,20 +5301,29 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
                         seg_id,
                         target_pair_index[seg_id],
                         display_order,
-                        tran_meta.get("source_object", ""),
-                        tran_meta.get("source_system", ""),
-                        tran_meta.get("target_object", ""),
-                        tran_meta.get("target_system", ""),
-                        tran_meta.get("source_type", ""),
-                        tran_meta.get("target_type", ""),
+                        source_object,
+                        source_system,
+                        target_object,
+                        target_system,
+                        source_type,
+                        target_type,
+                        source_subtype,
+                        target_subtype,
+                        "",
+                        "",
+                        "",
                         "",
                         field_name,
+                        field_name,
+                        field_name if is_rsiobj_backed_field_type(field_type) else "",
+                        field_type,
                         "",
                         target_inventory_origin,
                         0,
                         1,
                         "",
                         keyflag,
+                        "",
                         "",
                         "",
                         "",
@@ -3440,7 +5338,10 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(f"TRUNCATE TABLE `{RSTRAN_MAPPING_RULE_FULL_TABLE}`")
+        if IS_SQLITE:
+            cur.execute(f"DELETE FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}`")
+        else:
+            cur.execute(f"TRUNCATE TABLE `{RSTRAN_MAPPING_RULE_FULL_TABLE}`")
         if insert_rows:
             insert_sql = f"""
                 INSERT INTO `{RSTRAN_MAPPING_RULE_FULL_TABLE}` (
@@ -3456,8 +5357,16 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
                     target_system,
                     source_type,
                     target_type,
+                    source_subtype,
+                    target_subtype,
                     source_field,
+                    source_match_field,
+                    source_iobj_name,
+                    source_fieldtype,
                     target_field,
+                    target_match_field,
+                    target_iobj_name,
+                    target_fieldtype,
                     source_field_origin,
                     target_field_origin,
                     source_field_matched,
@@ -3465,10 +5374,11 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
                     source_field_is_key,
                     target_field_is_key,
                     rule_type,
+                    group_type,
                     aggr,
                     ruleposit,
                     row_kind
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             for start in range(0, len(insert_rows), insert_batch_size):
                 cur.executemany(insert_sql, insert_rows[start:start + insert_batch_size])
@@ -3491,26 +5401,43 @@ def rebuild_rstran_mapping_rule_full_table() -> Dict[str, int]:
         "target_completed_rows": target_completed_rows,
         "base_inserted_rows": int(base_result.get("inserted_rows") or 0),
         "base_tran_count": int(base_result.get("tran_count") or 0),
+        "inventory_inserted_rows": int(inventory_result.get("inserted_rows") or 0),
+        "inventory_object_count": int(inventory_result.get("object_count") or 0),
     }
 
 
-def rebuild_rstran_mapping_rule_table() -> Dict[str, int]:
+def fetch_normalized_tran_mapping_rows(tran_id: Optional[str] = None) -> List[Dict[str, object]]:
+    normalized_tran_id = str(tran_id or "").strip()
+    conn = get_conn()
+    cur = conn.cursor(dictionary=True)
+    try:
+        if normalized_tran_id:
+            cur.execute(get_tran_mapping_rule_select_sql(filter_by_tran=True), (normalized_tran_id,))
+        else:
+            cur.execute(get_tran_mapping_rule_select_sql(filter_by_tran=False))
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+    return normalize_tran_mapping_rows(rows)
+
+
+def rebuild_rstran_mapping_rule_table(normalized_rows: Optional[List[Dict[str, object]]] = None) -> Dict[str, int]:
     ensure_rstran_mapping_rule_table()
 
     conn = get_conn()
-    cur = conn.cursor(dictionary=True)
     inserted_rows = 0
     tran_count = 0
     try:
-        cur.execute(f"TRUNCATE TABLE `{RSTRAN_MAPPING_RULE_TABLE}`")
-        cur.execute(get_tran_mapping_rule_select_sql(filter_by_tran=False))
-        rows = cur.fetchall()
-        normalized_rows = normalize_tran_mapping_rows(rows)
+        cur = conn.cursor()
+        try:
+            if IS_SQLITE:
+                cur.execute(f"DELETE FROM `{RSTRAN_MAPPING_RULE_TABLE}`")
+            else:
+                cur.execute(f"TRUNCATE TABLE `{RSTRAN_MAPPING_RULE_TABLE}`")
 
-        if normalized_rows:
-            insert_cur = conn.cursor()
-            try:
-                insert_cur.executemany(
+            if normalized_rows is None and IS_SQLITE:
+                cur.execute(
                     f"""
                     INSERT INTO `{RSTRAN_MAPPING_RULE_TABLE}` (
                         tran_id,
@@ -3523,32 +5450,84 @@ def rebuild_rstran_mapping_rule_table() -> Dict[str, int]:
                         target_field,
                         target_keyflag,
                         rule_type,
+                        group_type,
                         aggr
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    [
-                        (
-                            row["tran_id"],
-                            row["rule_id"],
-                            row["step_id"],
-                            row["seg_id"],
-                            row["pair_index"],
-                            row["ruleposit"],
-                            row["source_field"],
-                            row["target_field"],
-                            row["target_key"],
-                            row["rule"],
-                            row["aggr"],
-                        )
-                        for row in normalized_rows
-                    ],
+                    )
+                    SELECT
+                        tran_id,
+                        rule_id,
+                        step_id,
+                        seg_id,
+                        pair_index,
+                        ruleposit,
+                        source_field,
+                        target_field,
+                        target_keyflag,
+                        rule_type,
+                        group_type,
+                        aggr
+                    FROM (
+                        {get_tran_mapping_rule_select_sql(filter_by_tran=False)}
+                    ) AS mapping_rows
+                    """
                 )
-                inserted_rows = insert_cur.rowcount or 0
-            finally:
-                insert_cur.close()
+                count_cur = conn.cursor(dictionary=True)
+                try:
+                    count_cur.execute(
+                        f"""
+                        SELECT COUNT(*) AS row_count, COUNT(DISTINCT tran_id) AS tran_count
+                        FROM `{RSTRAN_MAPPING_RULE_TABLE}`
+                        """
+                    )
+                    counts = count_cur.fetchone() or {}
+                    inserted_rows = int(counts.get("row_count") or 0)
+                    tran_count = int(counts.get("tran_count") or 0)
+                finally:
+                    count_cur.close()
+            else:
+                resolved_rows = normalized_rows if normalized_rows is not None else fetch_normalized_tran_mapping_rows()
+                if resolved_rows:
+                    cur.executemany(
+                        f"""
+                        INSERT INTO `{RSTRAN_MAPPING_RULE_TABLE}` (
+                            tran_id,
+                            rule_id,
+                            step_id,
+                            seg_id,
+                            pair_index,
+                            ruleposit,
+                            source_field,
+                            target_field,
+                            target_keyflag,
+                            rule_type,
+                            group_type,
+                            aggr
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            (
+                                row["tran_id"],
+                                row["rule_id"],
+                                row["step_id"],
+                                row["seg_id"],
+                                row["pair_index"],
+                                row["ruleposit"],
+                                row["source_field"],
+                                row["target_field"],
+                                row["target_key"],
+                                row["rule"],
+                                row.get("group_type", ""),
+                                row["aggr"],
+                            )
+                            for row in resolved_rows
+                        ],
+                    )
+                inserted_rows = len(resolved_rows)
+                tran_count = len({row["tran_id"] for row in resolved_rows if row.get("tran_id")})
+        finally:
+            cur.close()
 
         conn.commit()
-        tran_count = len({row["tran_id"] for row in normalized_rows if row.get("tran_id")})
         return {
             "inserted_rows": inserted_rows,
             "tran_count": tran_count,
@@ -3557,7 +5536,6 @@ def rebuild_rstran_mapping_rule_table() -> Dict[str, int]:
         conn.rollback()
         raise
     finally:
-        cur.close()
         conn.close()
 
 
@@ -4121,6 +6099,8 @@ def get_primary_keys(table_name: str) -> List[str]:
 
 
 def count_table_rows(table_name: str) -> int:
+    if not table_exists(table_name):
+        return 0
     conn = get_conn()
     cur = conn.cursor()
     if table_name == "bw_object_name":
@@ -4138,6 +6118,67 @@ def count_table_rows(table_name: str) -> int:
     cur.close()
     conn.close()
     return value
+
+
+class MaterializedReadModelNotReadyError(RuntimeError):
+    def __init__(self, missing_tables: List[str], empty_tables: List[str], counts: Dict[str, int]):
+        self.missing_tables = list(missing_tables)
+        self.empty_tables = list(empty_tables)
+        self.counts = dict(counts)
+        problems: List[str] = []
+        if self.missing_tables:
+            problems.append(f"missing={', '.join(self.missing_tables)}")
+        if self.empty_tables:
+            problems.append(f"empty={', '.join(self.empty_tables)}")
+        detail = "materialized read model not ready"
+        if problems:
+            detail = f"{detail}: {'; '.join(problems)}"
+        super().__init__(detail)
+
+
+def build_materialization_not_ready_http_exception(error: MaterializedReadModelNotReadyError) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "materialized_read_model_not_ready",
+            "message": "物化读模型未就绪，运行时查询已被禁止。请先重建字段库存和全量映射表。",
+            "missing_tables": error.missing_tables,
+            "empty_tables": error.empty_tables,
+            "table_counts": error.counts,
+            "required_actions": [
+                "/api/import/rebuild-bw-object-field-inventory",
+                "/api/import/rebuild-rstran-mapping-rule-full",
+            ],
+        },
+    )
+
+
+def assert_materialized_read_model_ready(required_tables: Optional[List[str]] = None) -> Dict[str, int]:
+    normalized_required_tables = required_tables or [
+        BW_OBJECT_FIELD_INVENTORY_TABLE,
+        RSTRAN_MAPPING_RULE_FULL_TABLE,
+    ]
+    missing_tables: List[str] = []
+    empty_tables: List[str] = []
+    counts: Dict[str, int] = {}
+
+    for table_name in normalized_required_tables:
+        normalized_table_name = str(table_name or "").strip()
+        if not normalized_table_name:
+            continue
+        if not table_exists(normalized_table_name):
+            missing_tables.append(normalized_table_name)
+            counts[normalized_table_name] = 0
+            continue
+        row_count = count_table_rows(normalized_table_name)
+        counts[normalized_table_name] = row_count
+        if row_count <= 0:
+            empty_tables.append(normalized_table_name)
+
+    if missing_tables or empty_tables:
+        raise MaterializedReadModelNotReadyError(missing_tables, empty_tables, counts)
+
+    return counts
 
 
 def list_queryable_table_names() -> List[str]:
@@ -4865,6 +6906,11 @@ def normalize_type_code(raw_type: str | None) -> str:
     return txt
 
 
+def normalize_iobj_subtype(raw_subtype: object) -> str:
+    normalized = str(raw_subtype or "").strip().upper()
+    return normalized if normalized in {"ATTR", "TEXT"} else ""
+
+
 def row_has_transformation_logic(start_routine: object, end_routine: object, expert: object) -> bool:
     return any(str(value or "").strip() for value in (start_routine, end_routine, expert))
 
@@ -4910,6 +6956,14 @@ def get_segment_source_type(segment: PathSegmentRequest) -> str:
 
 def get_segment_target_type(segment: PathSegmentRequest) -> str:
     return str(get_segment_path_value(segment, "TARGETTYPE", "target_type") or "").strip()
+
+
+def get_segment_source_subtype(segment: PathSegmentRequest) -> str:
+    return normalize_iobj_subtype(get_segment_path_value(segment, "SOURCESUBTYPE", "source_subtype"))
+
+
+def get_segment_target_subtype(segment: PathSegmentRequest) -> str:
+    return normalize_iobj_subtype(get_segment_path_value(segment, "TARGETSUBTYPE", "target_subtype"))
 
 
 def get_segment_source_system(segment: PathSegmentRequest) -> str:
@@ -4995,6 +7049,7 @@ def build_path_mapping_row_payload(row: Dict[str, object]) -> Dict[str, object]:
         "SOURCE_FIELD_MATCHED": int(row.get("source_field_matched") or 0),
         "TARGET_FIELD_MATCHED": int(row.get("target_field_matched") or 0),
         "RULE": str(row.get("rule") or row.get("rule_type") or "").strip(),
+        "GROUPTYPE": str(row.get("group_type") or row.get("GROUPTYPE") or "").strip(),
         "AGGR": str(row.get("aggr") or "").strip(),
         "ROW_KIND": str(row.get("row_kind") or "").strip(),
         "LOGIC_ENTRIES": logic_entries,
@@ -5016,11 +7071,13 @@ def build_path_step_logic_group_payload(group: Dict[str, object]) -> Dict[str, o
 
 def append_or_update_edge(
     edges: List[Dict[str, object]],
-    edge_by_key: Dict[Tuple[str, str, str, str], Dict[str, object]],
+    edge_by_key: Dict[Tuple[str, str, str, str, str, str], Dict[str, object]],
     source_name: str,
     target_name: str,
     source_type: str,
     target_type: str,
+    source_subtype: str = "",
+    target_subtype: str = "",
     source_system: str = "",
     target_system: str = "",
     tran_id: object = None,
@@ -5032,7 +7089,9 @@ def append_or_update_edge(
 ) -> None:
     normalized_source_node_key = str(source_node_key or source_name or "").strip()
     normalized_target_node_key = str(target_node_key or target_name or "").strip()
-    edge_key = (normalized_source_node_key, normalized_target_node_key, source_type, target_type)
+    normalized_source_subtype = normalize_iobj_subtype(source_subtype)
+    normalized_target_subtype = normalize_iobj_subtype(target_subtype)
+    edge_key = (normalized_source_node_key, normalized_target_node_key, source_type, target_type, normalized_source_subtype, normalized_target_subtype)
     logic_details = extract_transformation_logic_details(start_routine, end_routine, expert)
     tran_id_text = str(tran_id or "").strip()
     existing = edge_by_key.get(edge_key)
@@ -5042,6 +7101,8 @@ def append_or_update_edge(
             "TARGETNAME": target_name,
             "SOURCETYPE": source_type,
             "TARGETTYPE": target_type,
+            "SOURCESUBTYPE": normalized_source_subtype,
+            "TARGETSUBTYPE": normalized_target_subtype,
             "SOURCESYS": str(source_system or "").strip(),
             "TARGETSYSTEM": str(target_system or "").strip(),
             "TRANIDS": [tran_id_text] if tran_id_text else [],
@@ -5135,6 +7196,8 @@ def fetch_path_selection_metadata_by_tran_id(tran_id: str) -> Dict[str, str]:
             "tran_id": normalized_tran_id,
             "source_type": normalize_type_code(active_metadata.get("source_type")),
             "target_type": normalize_type_code(active_metadata.get("target_type")),
+            "source_subtype": normalize_iobj_subtype(active_metadata.get("source_subtype")),
+            "target_subtype": normalize_iobj_subtype(active_metadata.get("target_subtype")),
             "source_object": normalize_bw_object_lookup(active_metadata.get("source_object")),
             "source_system": normalize_bw_object_lookup(active_metadata.get("source_system")),
             "target_object": normalize_bw_object_lookup(active_metadata.get("target_object")),
@@ -5149,7 +7212,9 @@ def fetch_path_selection_metadata_by_tran_id(tran_id: str) -> Dict[str, str]:
     try:
         cur.execute(
             f"""
-            SELECT tran_id, source_object, source_system, target_object, target_system, source_type, target_type
+                 SELECT tran_id, source_object, source_system, target_object, target_system, source_type, target_type,
+                     COALESCE(source_subtype, '') AS source_subtype,
+                     COALESCE(target_subtype, '') AS target_subtype
             FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}`
             WHERE UPPER(TRIM(tran_id)) = UPPER(%s)
             LIMIT 1
@@ -5168,6 +7233,8 @@ def fetch_path_selection_metadata_by_tran_id(tran_id: str) -> Dict[str, str]:
         "tran_id": normalized_tran_id,
         "source_type": normalize_type_code(row.get("source_type")),
         "target_type": normalize_type_code(row.get("target_type")),
+        "source_subtype": normalize_iobj_subtype(row.get("source_subtype")),
+        "target_subtype": normalize_iobj_subtype(row.get("target_subtype")),
         "source_object": normalize_bw_object_lookup(row.get("source_object")),
         "source_system": normalize_bw_object_lookup(row.get("source_system")),
         "target_object": normalize_bw_object_lookup(row.get("target_object")),
@@ -5197,6 +7264,8 @@ def fetch_path_selection_metadata_batch(tran_ids: List[str]) -> Dict[str, Dict[s
                 "tran_id": tran_id,
                 "source_type": normalize_type_code(meta.get("source_type")),
                 "target_type": normalize_type_code(meta.get("target_type")),
+                "source_subtype": normalize_iobj_subtype(meta.get("source_subtype")),
+                "target_subtype": normalize_iobj_subtype(meta.get("target_subtype")),
                 "source_object": normalize_bw_object_lookup(meta.get("source_object")),
                 "source_system": normalize_bw_object_lookup(meta.get("source_system")),
                 "target_object": normalize_bw_object_lookup(meta.get("target_object")),
@@ -5212,7 +7281,9 @@ def fetch_path_selection_metadata_batch(tran_ids: List[str]) -> Dict[str, Dict[s
         try:
             cur.execute(
                 f"""
-                SELECT DISTINCT tran_id, source_object, source_system, target_object, target_system, source_type, target_type
+                  SELECT DISTINCT tran_id, source_object, source_system, target_object, target_system, source_type, target_type,
+                      COALESCE(source_subtype, '') AS source_subtype,
+                      COALESCE(target_subtype, '') AS target_subtype
                 FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}`
                 WHERE UPPER(TRIM(tran_id)) IN ({placeholders})
                 """,
@@ -5226,6 +7297,8 @@ def fetch_path_selection_metadata_batch(tran_ids: List[str]) -> Dict[str, Dict[s
                         "tran_id": tran_id,
                         "source_type": normalize_type_code(row.get("source_type")),
                         "target_type": normalize_type_code(row.get("target_type")),
+                        "source_subtype": normalize_iobj_subtype(row.get("source_subtype")),
+                        "target_subtype": normalize_iobj_subtype(row.get("target_subtype")),
                         "source_object": normalize_bw_object_lookup(row.get("source_object")),
                         "source_system": normalize_bw_object_lookup(row.get("source_system")),
                         "target_object": normalize_bw_object_lookup(row.get("target_object")),
@@ -5249,6 +7322,8 @@ def search_candidate_paths_by_tran_id(tran_id: str) -> Dict[str, object]:
     target_name = str(metadata.get("target_object") or "").strip()
     source_type = normalize_type_code(metadata.get("source_type"))
     target_type = normalize_type_code(metadata.get("target_type"))
+    source_subtype = normalize_iobj_subtype(metadata.get("source_subtype"))
+    target_subtype = normalize_iobj_subtype(metadata.get("target_subtype"))
     start_name = resolve_rstran_start_name(source_name, source_system, source_type)
     node_name_map = fetch_bw_object_name_map([start_name, target_name])
 
@@ -5261,12 +7336,14 @@ def search_candidate_paths_by_tran_id(tran_id: str) -> Dict[str, object]:
                 "id": start_name,
                 "OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(start_name), ""),
                 "TYPE": source_type,
+                "SUBTYPE": source_subtype,
                 "SOURCESYS": source_system,
             },
             {
                 "id": target_name,
                 "OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(target_name), ""),
                 "TYPE": target_type,
+                "SUBTYPE": target_subtype,
             },
         ],
         "WAYPOINTS_HIT": [],
@@ -5276,6 +7353,8 @@ def search_candidate_paths_by_tran_id(tran_id: str) -> Dict[str, object]:
                 "TARGETNAME": target_name,
                 "SOURCETYPE": source_type,
                 "TARGETTYPE": target_type,
+                "SOURCESUBTYPE": source_subtype,
+                "TARGETSUBTYPE": target_subtype,
                 "SOURCESYS": source_system,
                 "TARGETSYSTEM": str(metadata.get("target_system") or "").strip(),
                 "SOURCE_OBJECT_NAME": node_name_map.get(normalize_bw_object_lookup(start_name), ""),
@@ -5426,34 +7505,33 @@ def search_candidate_paths(
     if not table_exists("rstran"):
         raise HTTPException(status_code=400, detail="路径查询依赖 RSTRAN 数据，请先导入 rstran 表")
 
-    source_type = "RSDS" if is_rsds_source_name(normalized_source_name) else "UNKNOWN"
-    if source_type == "RSDS" and not normalized_source_system:
-        raise HTTPException(status_code=400, detail="当 Source 是数据源（RSDS）时，必须填写 Source system")
-
     rstran_columns = set(get_table_columns("rstran"))
     source_col = "SOURCE" if "SOURCE" in rstran_columns else ("DATASOURCE" if "DATASOURCE" in rstran_columns else "")
+    source_subtype_sql = ", SOURCESUBTYPE" if "SOURCESUBTYPE" in rstran_columns else ", '' AS SOURCESUBTYPE"
+    target_subtype_sql = ", TARGETSUBTYPE" if "TARGETSUBTYPE" in rstran_columns else ", '' AS TARGETSUBTYPE"
     if not source_col:
         raise HTTPException(status_code=400, detail="RSTRAN 缺少 SOURCE 字段，无法按新规则生成路径")
 
-    start_name = resolve_rstran_start_name(normalized_source_name, normalized_source_system, source_type)
-    start_key = make_path_node_key(start_name, source_type, normalized_source_system)
+    start_name = resolve_rstran_start_name(normalized_source_name, normalized_source_system, "")
     target_key = make_path_node_key(normalized_target_name, "", "")
 
     total_start = time.time()
     conn = get_conn()
     cur = conn.cursor()
     adjacency: Dict[str, List[Dict[str, object]]] = {}
-    edge_by_key: Dict[Tuple[str, str, str, str], Dict[str, object]] = {}
+    edge_by_key: Dict[Tuple[str, str, str, str, str, str], Dict[str, object]] = {}
     edges: List[Dict[str, object]] = []
-    node_types: Dict[str, str] = {start_key: source_type}
-    node_labels: Dict[str, str] = {start_key: start_name}
-    node_systems: Dict[str, str] = {start_key: normalized_source_system}
+    node_types: Dict[str, str] = {}
+    node_labels: Dict[str, str] = {}
+    node_systems: Dict[str, str] = {}
+    exact_start_node_keys: List[str] = []
+    exact_start_node_key_set: Set[str] = set()
 
     try:
         step1_start = time.time()
         cur.execute(
             f"""
-            SELECT {source_col} AS SOURCE, SOURCESYS, TARGETNAME, SOURCETYPE, TARGETTYPE, TRANID, STARTROUTINE, ENDROUTINE, EXPERT
+                        SELECT {source_col} AS SOURCE, SOURCESYS, TARGETNAME, SOURCETYPE, TARGETTYPE{source_subtype_sql}{target_subtype_sql}, TRANID, STARTROUTINE, ENDROUTINE, EXPERT
             FROM rstran
             WHERE OBJVERS = 'A'
               AND {source_col} IS NOT NULL
@@ -5467,6 +7545,8 @@ def search_candidate_paths(
         for row in cur.fetchall():
             row_source_type = normalize_type_code(row[3])
             row_target_type = normalize_type_code(row[4])
+            row_source_subtype = normalize_iobj_subtype(row[5])
+            row_target_subtype = normalize_iobj_subtype(row[6])
 
             source_value = str(row[0] or "").strip()
             source_system_value = ""
@@ -5492,7 +7572,12 @@ def search_candidate_paths(
             if target_system_value:
                 node_systems[target_node_key] = target_system_value
 
+            if source_value == normalized_source_name and source_system_value == normalized_source_system and source_node_key not in exact_start_node_key_set:
+                exact_start_node_key_set.add(source_node_key)
+                exact_start_node_keys.append(source_node_key)
+
             edge_key = (source_node_key, target_node_key, row_source_type, row_target_type)
+            edge_key = (source_node_key, target_node_key, row_source_type, row_target_type, row_source_subtype, row_target_subtype)
             is_new_edge = edge_key not in edge_by_key
 
             append_or_update_edge(
@@ -5502,12 +7587,14 @@ def search_candidate_paths(
                 target_value,
                 row_source_type,
                 row_target_type,
+                row_source_subtype,
+                row_target_subtype,
                 source_system_value,
                 target_system_value,
-                row[5],
-                row[6],
                 row[7],
                 row[8],
+                row[9],
+                row[10],
                 source_node_key=source_node_key,
                 target_node_key=target_node_key,
             )
@@ -5522,7 +7609,8 @@ def search_candidate_paths(
     step4_start = time.time()
     candidate_paths: List[Dict[str, object]] = []
     queue: deque[Tuple[List[str], List[str], List[Dict[str, object]]]] = deque()
-    queue.append(([start_key], [start_name], []))
+    for start_node_key in exact_start_node_keys:
+        queue.append(([start_node_key], [node_labels.get(start_node_key, start_name)], []))
     seen_signatures: Set[str] = set()
     states_visited = 0
     truncated = False
@@ -5768,6 +7856,7 @@ def get_tran_mapping_rule_select_sql(filter_by_tran: bool = True) -> str:
                 paired_rows.target_keyflag AS target_keyflag,
                 COALESCE(paired_rows.target_ruleposit, paired_rows.source_ruleposit, '') AS ruleposit,
                 rule.RULETYPE AS rule_type,
+                                COALESCE(NULLIF(TRIM(rule.GROUPTYPE), ''), '') AS group_type,
                 COALESCE(NULLIF(TRIM(rule.AGGR), ''), '') AS aggr
             FROM paired_rows
             INNER JOIN rstranrule AS rule
@@ -5800,12 +7889,17 @@ def normalize_tran_mapping_rows(rows: List[Dict[str, object]]) -> List[Dict[str,
                 "ruleposit": str(row.get("ruleposit") or "").strip(),
                 "source_system": str(row.get("source_system") or "").strip(),
                 "source_field": source_field,
+                "source_match_field": str(row.get("source_match_field") or "").strip(),
+                "source_iobj_name": str(row.get("source_iobj_name") or "").strip(),
                 "source_fieldtype": str(row.get("source_fieldtype") or "").strip(),
                 "source_key": str(row.get("source_keyflag") or row.get("source_key") or "").strip(),
                 "target_field": target_field,
+                "target_match_field": str(row.get("target_match_field") or "").strip(),
+                "target_iobj_name": str(row.get("target_iobj_name") or "").strip(),
                 "target_fieldtype": str(row.get("target_fieldtype") or "").strip(),
                 "target_key": str(row.get("target_keyflag") or row.get("target_key") or "").strip(),
                 "rule": str(row.get("rule_type") or row.get("rule") or "").strip(),
+                "group_type": str(row.get("group_type") or "").strip(),
                 "aggr": str(row.get("aggr") or "").strip(),
                 "source_field_origin": str(row.get("source_field_origin") or "").strip(),
                 "target_field_origin": str(row.get("target_field_origin") or "").strip(),
@@ -5816,142 +7910,34 @@ def normalize_tran_mapping_rows(rows: List[Dict[str, object]]) -> List[Dict[str,
 
 
 def fetch_materialized_tran_mapping_rows(tran_id: str) -> List[Dict[str, object]]:
-    if table_exists(RSTRAN_MAPPING_RULE_FULL_TABLE):
-        normalized_tran_id = str(tran_id or "").strip()
-        if not normalized_tran_id:
-            return []
-
-        conn = get_conn()
-        cur = conn.cursor(dictionary=True)
-        try:
-            cur.execute(
-                f"""
-                SELECT tran_id, rule_id, step_id, seg_id, pair_index, display_order, ruleposit,
-                                 source_system,
-                                 source_field,
-                                 COALESCE((
-                                     SELECT COALESCE(NULLIF(TRIM(field.FIELDTYPE), ''), '')
-                                     FROM rstranfield AS field
-                                     WHERE field.OBJVERS = 'A'
-                                     AND field.PARAMTYPE = '0'
-                                     AND field.TRANID = full_map.tran_id
-                                     AND field.RULEID = full_map.rule_id
-                                     AND field.STEPID = full_map.step_id
-                                     AND field.SEGID = full_map.seg_id
-                                     AND field.FIELDNM = full_map.source_field
-                                     LIMIT 1
-                                 ), (
-                                     SELECT CASE
-                                         WHEN COALESCE(NULLIF(TRIM(meta.IOBJNM), ''), '') <> '' THEN 'I'
-                                         WHEN COALESCE(NULLIF(TRIM(meta.FIELDNM), ''), '') <> '' THEN 'F'
-                                         ELSE ''
-                                     END
-                                     FROM rsksfieldnew AS meta
-                                     WHERE full_map.source_field_origin = 'rsksfieldnew'
-                                       AND meta.OBJVERS = 'A'
-                                       AND UPPER(TRIM(meta.ISOURCE)) = UPPER(TRIM(full_map.source_object))
-                                       AND UPPER(TRIM(COALESCE(NULLIF(meta.IOBJNM, ''), meta.FIELDNM))) = UPPER(TRIM(full_map.source_field))
-                                     LIMIT 1
-                                 ), '') AS source_fieldtype,
-                                                                 source_field_is_key AS source_keyflag,
-                                 target_field,
-                                             COALESCE((
-                                                     SELECT COALESCE(NULLIF(TRIM(field.FIELDTYPE), ''), '')
-                                                     FROM rstranfield AS field
-                                                     WHERE field.OBJVERS = 'A'
-                                                         AND field.PARAMTYPE = '1'
-                                                         AND field.TRANID = full_map.tran_id
-                                                         AND field.RULEID = full_map.rule_id
-                                                         AND field.STEPID = full_map.step_id
-                                                         AND field.SEGID = full_map.seg_id
-                                                         AND field.FIELDNM = full_map.target_field
-                                                     LIMIT 1
-                                             ), (
-                                                 SELECT CASE
-                                                     WHEN COALESCE(NULLIF(TRIM(meta.IOBJNM), ''), '') <> '' THEN 'I'
-                                                     WHEN COALESCE(NULLIF(TRIM(meta.FIELDNM), ''), '') <> '' THEN 'F'
-                                                     ELSE ''
-                                                 END
-                                                 FROM rsksfieldnew AS meta
-                                                 WHERE full_map.target_field_origin = 'rsksfieldnew'
-                                                   AND meta.OBJVERS = 'A'
-                                                   AND UPPER(TRIM(meta.ISOURCE)) = UPPER(TRIM(full_map.target_object))
-                                                   AND UPPER(TRIM(COALESCE(NULLIF(meta.IOBJNM, ''), meta.FIELDNM))) = UPPER(TRIM(full_map.target_field))
-                                                 LIMIT 1
-                                             ), '') AS target_fieldtype,
-                                             target_field_is_key AS target_keyflag,
-                                             rule_type, aggr, source_field_origin, target_field_origin, row_kind
-                                FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}` AS full_map
-                WHERE tran_id = %s
-                ORDER BY display_order, rule_id, step_id, seg_id, pair_index, source_field, target_field
-                """,
-                (normalized_tran_id,),
-            )
-            rows = cur.fetchall()
-        finally:
-            cur.close()
-            conn.close()
-
-        normalized_rows = normalize_tran_mapping_rows(rows)
-        if normalized_rows:
-            return normalized_rows
-
-    if not table_exists(RSTRAN_MAPPING_RULE_TABLE):
-        return []
-
     normalized_tran_id = str(tran_id or "").strip()
     if not normalized_tran_id:
         return []
+
+    assert_materialized_read_model_ready()
 
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute(
             f"""
-                SELECT tran_id, rule_id, step_id, seg_id, pair_index, ruleposit,
-                             '' AS source_system,
+                SELECT tran_id, rule_id, step_id, seg_id, pair_index, display_order, ruleposit,
+                             source_system,
                              source_field,
-                             COALESCE((
-                                 SELECT COALESCE(NULLIF(TRIM(field.FIELDTYPE), ''), '')
-                                 FROM rstranfield AS field
-                                 WHERE field.OBJVERS = 'A'
-                                 AND field.PARAMTYPE = '0'
-                                 AND field.TRANID = base_map.tran_id
-                                 AND field.RULEID = base_map.rule_id
-                                 AND field.STEPID = base_map.step_id
-                                 AND field.SEGID = base_map.seg_id
-                                 AND field.FIELDNM = base_map.source_field
-                                 LIMIT 1
-                             ), '') AS source_fieldtype,
-                             COALESCE((
-                                 SELECT COALESCE(NULLIF(TRIM(field.KEYFLAG), ''), '')
-                                 FROM rstranfield AS field
-                                 WHERE field.OBJVERS = 'A'
-                                 AND field.PARAMTYPE = '0'
-                                 AND field.TRANID = base_map.tran_id
-                                 AND field.RULEID = base_map.rule_id
-                                 AND field.STEPID = base_map.step_id
-                                 AND field.SEGID = base_map.seg_id
-                                 AND field.FIELDNM = base_map.source_field
-                                 LIMIT 1
-                             ), '') AS source_keyflag,
+                             source_match_field,
+                             source_iobj_name,
+                             source_fieldtype,
+                             source_field_is_key AS source_keyflag,
                              target_field,
-                                     COALESCE((
-                                             SELECT COALESCE(NULLIF(TRIM(field.FIELDTYPE), ''), '')
-                                             FROM rstranfield AS field
-                                             WHERE field.OBJVERS = 'A'
-                                                 AND field.PARAMTYPE = '1'
-                                                 AND field.TRANID = base_map.tran_id
-                                                 AND field.RULEID = base_map.rule_id
-                                                 AND field.STEPID = base_map.step_id
-                                                 AND field.SEGID = base_map.seg_id
-                                                 AND field.FIELDNM = base_map.target_field
-                                             LIMIT 1
-                                     ), '') AS target_fieldtype,
-                                     target_keyflag, rule_type, aggr
-                        FROM `{RSTRAN_MAPPING_RULE_TABLE}` AS base_map
+                             target_match_field,
+                             target_iobj_name,
+                             target_fieldtype,
+                             target_field_is_key AS target_keyflag,
+                             rule_type, group_type, aggr, source_field_origin, target_field_origin, row_kind,
+                             source_object, target_object
+                        FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}` AS base_map
             WHERE tran_id = %s
-            ORDER BY rule_id, step_id, seg_id, pair_index
+            ORDER BY display_order, rule_id, step_id, seg_id, pair_index, source_field, target_field
             """,
             (normalized_tran_id,),
         )
@@ -5967,21 +7953,7 @@ def fetch_tran_mapping_rows(tran_id: str) -> List[Dict[str, object]]:
     normalized_tran_id = str(tran_id or "").strip()
     if not normalized_tran_id:
         return []
-
-    materialized_rows = fetch_materialized_tran_mapping_rows_batch([normalized_tran_id]).get(normalized_tran_id, [])
-    if materialized_rows:
-        return apply_unified_mapping_row_field_types(materialized_rows)
-
-    conn = get_conn()
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute(get_tran_mapping_rule_select_sql(filter_by_tran=True), (normalized_tran_id, normalized_tran_id))
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-        conn.close()
-
-    return apply_unified_mapping_row_field_types(normalize_tran_mapping_rows(rows))
+    return fetch_materialized_tran_mapping_rows_batch([normalized_tran_id]).get(normalized_tran_id, [])
 
 
 def fetch_materialized_tran_mapping_rows_batch(tran_ids: List[str]) -> Dict[str, List[Dict[str, object]]]:
@@ -5997,8 +7969,7 @@ def fetch_materialized_tran_mapping_rows_batch(tran_ids: List[str]) -> Dict[str,
     if not normalized_tran_ids:
         return {}
 
-    if not table_exists(RSTRAN_MAPPING_RULE_FULL_TABLE):
-        return {tran_id: fetch_materialized_tran_mapping_rows(tran_id) for tran_id in normalized_tran_ids}
+    assert_materialized_read_model_ready()
 
     placeholders = ", ".join(["%s"] * len(normalized_tran_ids))
     conn = get_conn()
@@ -6007,9 +7978,10 @@ def fetch_materialized_tran_mapping_rows_batch(tran_ids: List[str]) -> Dict[str,
         cur.execute(
             f"""
             SELECT tran_id, rule_id, step_id, seg_id, pair_index, display_order, ruleposit,
-                   source_system, source_field, source_field_is_key AS source_keyflag,
-                   target_field, target_field_is_key AS target_keyflag,
-                   rule_type, aggr, source_field_origin, target_field_origin, row_kind,
+                                     source_type, target_type,
+                                                                         source_system, source_field, source_match_field, source_iobj_name, source_fieldtype, source_field_is_key AS source_keyflag,
+                                                                         target_field, target_match_field, target_iobj_name, target_fieldtype, target_field_is_key AS target_keyflag,
+                     rule_type, group_type, aggr, source_field_origin, target_field_origin, row_kind,
                    source_object, target_object
             FROM `{RSTRAN_MAPPING_RULE_FULL_TABLE}`
             WHERE tran_id IN ({placeholders})
@@ -6025,121 +7997,16 @@ def fetch_materialized_tran_mapping_rows_batch(tran_ids: List[str]) -> Dict[str,
     if not rows:
         return {}
 
-    field_lookup_keys: Set[Tuple[str, int, int, str, str, str]] = set()
-    rsks_lookup_pairs: Set[Tuple[str, str]] = set()
-    for row in rows:
-        tran_id = str(row.get("tran_id") or "").strip()
-        rule_id = int(row.get("rule_id") or 0)
-        step_id = int(row.get("step_id") or 0)
-        seg_id = str(row.get("seg_id") or "").strip()
-        source_field = str(row.get("source_field") or "").strip()
-        target_field = str(row.get("target_field") or "").strip()
-        if source_field:
-            field_lookup_keys.add((tran_id, rule_id, step_id, seg_id, "0", source_field))
-            if str(row.get("source_field_origin") or "").strip() == "rsksfieldnew":
-                rsks_lookup_pairs.add((normalize_bw_object_lookup(row.get("source_object")), normalize_field_name(source_field)))
-        if target_field:
-            field_lookup_keys.add((tran_id, rule_id, step_id, seg_id, "1", target_field))
-            if str(row.get("target_field_origin") or "").strip() == "rsksfieldnew":
-                rsks_lookup_pairs.add((normalize_bw_object_lookup(row.get("target_object")), normalize_field_name(target_field)))
-
-    field_type_lookup: Dict[Tuple[str, int, int, str, str, str], Tuple[str, str]] = {}
-    if field_lookup_keys:
-        conn = get_conn()
-        cur = conn.cursor(dictionary=True)
-        try:
-            cur.execute(
-                f"""
-                SELECT TRANID, RULEID, STEPID, SEGID, PARAMTYPE, FIELDNM, FIELDTYPE, KEYFLAG
-                FROM rstranfield
-                WHERE OBJVERS = 'A'
-                  AND TRANID IN ({placeholders})
-                  AND PARAMTYPE IN ('0', '1')
-                """,
-                tuple(normalized_tran_ids),
-            )
-            for row in cur.fetchall():
-                lookup_key = (
-                    str(row.get("TRANID") or "").strip(),
-                    int(row.get("RULEID") or 0),
-                    int(row.get("STEPID") or 0),
-                    str(row.get("SEGID") or "").strip(),
-                    str(row.get("PARAMTYPE") or "").strip(),
-                    str(row.get("FIELDNM") or "").strip(),
-                )
-                if lookup_key in field_lookup_keys:
-                    field_type_lookup[lookup_key] = (
-                        str(row.get("FIELDTYPE") or "").strip(),
-                        str(row.get("KEYFLAG") or "").strip(),
-                    )
-        finally:
-            cur.close()
-            conn.close()
-
-    rsks_field_type_lookup: Dict[Tuple[str, str], str] = {}
-    rsks_sources = sorted({source for source, _ in rsks_lookup_pairs if source})
-    if rsks_sources and table_exists("rsksfieldnew"):
-        placeholders_rsks = ", ".join(["%s"] * len(rsks_sources))
-        conn = get_conn()
-        cur = conn.cursor(dictionary=True)
-        try:
-            cur.execute(
-                f"""
-                SELECT ISOURCE, FIELDNM, IOBJNM
-                FROM rsksfieldnew
-                WHERE OBJVERS = 'A'
-                  AND ISOURCE IN ({placeholders_rsks})
-                """,
-                tuple(rsks_sources),
-            )
-            for row in cur.fetchall():
-                source_name = normalize_bw_object_lookup(row.get("ISOURCE"))
-                lookup_field = normalize_field_name(row.get("IOBJNM") or row.get("FIELDNM"))
-                if not source_name or not lookup_field:
-                    continue
-                pair = (source_name, lookup_field)
-                if pair in rsks_lookup_pairs and pair not in rsks_field_type_lookup:
-                    rsks_field_type_lookup[pair] = "I" if normalize_field_name(row.get("IOBJNM")) else "F"
-        finally:
-            cur.close()
-            conn.close()
-
     rows_by_tran: Dict[str, List[Dict[str, object]]] = defaultdict(list)
     for row in rows:
         tran_id = str(row.get("tran_id") or "").strip()
-        rule_id = int(row.get("rule_id") or 0)
-        step_id = int(row.get("step_id") or 0)
-        seg_id = str(row.get("seg_id") or "").strip()
-        source_field = str(row.get("source_field") or "").strip()
-        target_field = str(row.get("target_field") or "").strip()
-
-        source_field_type, source_keyflag = field_type_lookup.get(
-            (tran_id, rule_id, step_id, seg_id, "0", source_field),
-            ("", str(row.get("source_keyflag") or "").strip()),
-        )
-        target_field_type, target_keyflag = field_type_lookup.get(
-            (tran_id, rule_id, step_id, seg_id, "1", target_field),
-            ("", str(row.get("target_keyflag") or "").strip()),
-        )
-
-        if not source_field_type and str(row.get("source_field_origin") or "").strip() == "rsksfieldnew":
-            source_field_type = rsks_field_type_lookup.get(
-                (normalize_bw_object_lookup(row.get("source_object")), normalize_field_name(source_field)),
-                "",
-            )
-        if not target_field_type and str(row.get("target_field_origin") or "").strip() == "rsksfieldnew":
-            target_field_type = rsks_field_type_lookup.get(
-                (normalize_bw_object_lookup(row.get("target_object")), normalize_field_name(target_field)),
-                "",
-            )
-
         normalized_rows = normalize_tran_mapping_rows([
             {
                 **row,
-                "source_fieldtype": source_field_type,
-                "source_keyflag": source_keyflag,
-                "target_fieldtype": target_field_type,
-                "target_keyflag": target_keyflag,
+                "source_fieldtype": str(row.get("source_fieldtype") or "").strip(),
+                "source_keyflag": str(row.get("source_keyflag") or "").strip(),
+                "target_fieldtype": str(row.get("target_fieldtype") or "").strip(),
+                "target_keyflag": str(row.get("target_keyflag") or "").strip(),
             }
         ])
         if normalized_rows:
@@ -6220,6 +8087,14 @@ def sort_logic_entries(entries: List[Dict[str, object]]) -> List[Dict[str, objec
     )
 
 
+def get_rule_logic_lookup_key(tran_id: str, rule_id: int) -> Tuple[str, int] | None:
+    normalized_tran_id = str(tran_id or "").strip()
+    normalized_rule_id = int(rule_id or 0)
+    if not normalized_tran_id or normalized_rule_id <= 0:
+        return None
+    return (normalized_tran_id, normalized_rule_id)
+
+
 def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
     normalized_tran_ids = sorted({str(item or "").strip() for item in (tran_ids or []) if str(item or "").strip()})
     if not normalized_tran_ids:
@@ -6228,7 +8103,7 @@ def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     step_programs_map: Dict[str, List[Dict[str, object]]] = defaultdict(list)
-    rule_entries_map: Dict[Tuple[str, int, int], List[Dict[str, object]]] = defaultdict(list)
+    rule_entries_map: Dict[Tuple[str, int], List[Dict[str, object]]] = defaultdict(list)
     try:
         placeholders = ",".join(["%s"] * len(normalized_tran_ids))
         upper_tran_ids = tuple(str(item).upper() for item in normalized_tran_ids)
@@ -6261,7 +8136,9 @@ def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
             if kind in STEP_LEVEL_ROUTINE_KINDS:
                 step_programs_map[tran_id].append(entry)
             else:
-                rule_entries_map[(tran_id, rule_id, step_id)].append(entry)
+                lookup_key = get_rule_logic_lookup_key(tran_id, rule_id)
+                if lookup_key:
+                    rule_entries_map[lookup_key].append(entry)
 
         cur.execute(
             f"""
@@ -6286,7 +8163,9 @@ def fetch_tran_logic_details(tran_ids: List[str]) -> Dict[str, object]:
                 source_table="rstranstepcnst",
                 is_constant=True,
             )
-            rule_entries_map[(tran_id, rule_id, step_id)].append(entry)
+            lookup_key = get_rule_logic_lookup_key(tran_id, rule_id)
+            if lookup_key:
+                rule_entries_map[lookup_key].append(entry)
     finally:
         cur.close()
         conn.close()
@@ -6305,7 +8184,7 @@ def fetch_tran_logic_summary(tran_ids: List[str]) -> Dict[str, object]:
     conn = get_conn()
     cur = conn.cursor(dictionary=True)
     step_entry_count_by_tran: Dict[str, int] = defaultdict(int)
-    rule_entry_keys: Set[Tuple[str, int, int]] = set()
+    rule_entry_keys: Set[Tuple[str, int]] = set()
     try:
         placeholders = ",".join(["%s"] * len(normalized_tran_ids))
         upper_tran_ids = tuple(str(item).upper() for item in normalized_tran_ids)
@@ -6327,7 +8206,9 @@ def fetch_tran_logic_summary(tran_ids: List[str]) -> Dict[str, object]:
             if kind in STEP_LEVEL_ROUTINE_KINDS:
                 step_entry_count_by_tran[tran_id] += 1
             else:
-                rule_entry_keys.add((tran_id, rule_id, step_id))
+                lookup_key = get_rule_logic_lookup_key(tran_id, rule_id)
+                if lookup_key:
+                    rule_entry_keys.add(lookup_key)
 
         cur.execute(
             f"""
@@ -6342,7 +8223,9 @@ def fetch_tran_logic_summary(tran_ids: List[str]) -> Dict[str, object]:
             tran_id = str(row.get("TRANID") or "").strip()
             rule_id = int(row.get("RULEID") or 0)
             step_id = int(row.get("STEPID") or 0)
-            rule_entry_keys.add((tran_id, rule_id, step_id))
+            lookup_key = get_rule_logic_lookup_key(tran_id, rule_id)
+            if lookup_key:
+                rule_entry_keys.add(lookup_key)
     finally:
         cur.close()
         conn.close()
@@ -6365,18 +8248,51 @@ def normalize_segment_tran_ids(tran_ids: List[str] | None) -> List[str]:
     return normalized_tran_ids
 
 
+def filter_segment_mapping_rows_by_subtype(
+    rows: List[Dict[str, object]],
+    segment_source_type: str,
+    segment_source_subtype: str,
+    source_inventory: Dict[str, Dict[str, object]],
+    segment_target_type: str,
+    segment_target_subtype: str,
+    target_inventory: Dict[str, Dict[str, object]],
+) -> List[Dict[str, object]]:
+    normalized_source_type = normalize_type_code(segment_source_type)
+    normalized_target_type = normalize_type_code(segment_target_type)
+    normalized_source_subtype = normalize_iobj_subtype(segment_source_subtype)
+    normalized_target_subtype = normalize_iobj_subtype(segment_target_subtype)
+    if normalized_source_type != "IOBJ" and normalized_target_type != "IOBJ":
+        return rows
+
+    filtered_rows: List[Dict[str, object]] = []
+    for row in rows:
+        row_kind = str(row.get("row_kind") or "").strip()
+        seg_id = str(row.get("seg_id") or "").strip()
+        if normalized_source_type == "IOBJ" and normalized_source_subtype and row_kind == "source_only":
+            source_field = normalize_field_name(row.get("source_field"))
+            if source_field and not inventory_contains_field(source_inventory, seg_id, source_field):
+                continue
+        if normalized_target_type == "IOBJ" and normalized_target_subtype and row_kind == "target_only":
+            target_field = normalize_field_name(row.get("target_field"))
+            if target_field and not inventory_contains_field(target_inventory, seg_id, target_field):
+                continue
+        filtered_rows.append(row)
+    return filtered_rows
+
+
 def build_path_mapping_payload(
     segments: List[PathSegmentRequest],
     include_logic: bool = False,
     include_text: bool = False,
 ) -> Dict[str, object]:
+    assert_materialized_read_model_ready()
     total_start = time.time()
     
     prepared_segments: List[Dict[str, object]] = []
     adso_objects: Set[str] = set()
     odso_objects: Set[str] = set()
     trcs_objects: Set[str] = set()
-    iobj_objects: Set[str] = set()
+    iobj_objects: Set[Tuple[str, str]] = set()
     rsds_pairs: Set[Tuple[str, str]] = set()
     all_tran_ids: Set[str] = set()
     tran_metadata_cache: Dict[str, Dict[str, str]] = {}
@@ -6400,6 +8316,8 @@ def build_path_mapping_payload(
         segment_target = get_segment_target_name(segment)
         segment_source_type = get_segment_source_type(segment)
         segment_target_type = get_segment_target_type(segment)
+        segment_source_subtype = get_segment_source_subtype(segment)
+        segment_target_subtype = get_segment_target_subtype(segment)
         source_system = get_segment_source_system(segment)
         target_system = get_segment_target_system(segment)
 
@@ -6421,6 +8339,10 @@ def build_path_mapping_payload(
                     segment_source_type = str(tran_meta.get("source_type") or "").strip()
                 if not segment_target_type:
                     segment_target_type = str(tran_meta.get("target_type") or "").strip()
+                if not segment_source_subtype:
+                    segment_source_subtype = str(tran_meta.get("source_subtype") or "").strip()
+                if not segment_target_subtype:
+                    segment_target_subtype = str(tran_meta.get("target_subtype") or "").strip()
                 if not source_system:
                     source_system = str(tran_meta.get("source_system") or "").strip()
                 if not target_system:
@@ -6430,6 +8352,8 @@ def build_path_mapping_payload(
 
         normalized_source_type = normalize_type_code(segment_source_type)
         normalized_target_type = normalize_type_code(segment_target_type)
+        normalized_source_subtype = normalize_iobj_subtype(segment_source_subtype)
+        normalized_target_subtype = normalize_iobj_subtype(segment_target_subtype)
 
         if normalized_source_type in {"RSDS", "DATASOURCE", "SOURCE"}:
             segment_source, source_system = parse_rsds_identity(segment_source, source_system)
@@ -6446,7 +8370,7 @@ def build_path_mapping_payload(
         elif normalized_source_type == "TRCS" and normalized_source:
             trcs_objects.add(normalized_source)
         elif normalized_source_type == "IOBJ" and normalized_source:
-            iobj_objects.add(normalized_source)
+            iobj_objects.add((normalized_source, normalized_source_subtype))
         elif normalized_source_type in {"RSDS", "DATASOURCE", "SOURCE"} and normalized_source and source_system:
             rsds_pairs.add((normalized_source, source_system))
 
@@ -6457,7 +8381,7 @@ def build_path_mapping_payload(
         elif normalized_target_type == "TRCS" and normalized_target:
             trcs_objects.add(normalized_target)
         elif normalized_target_type == "IOBJ" and normalized_target:
-            iobj_objects.add(normalized_target)
+            iobj_objects.add((normalized_target, normalized_target_subtype))
         elif normalized_target_type in {"RSDS", "DATASOURCE", "SOURCE"} and normalized_target and target_system:
             rsds_pairs.add((normalized_target, target_system))
 
@@ -6467,6 +8391,8 @@ def build_path_mapping_payload(
                 "TARGETNAME": segment_target,
                 "SOURCETYPE": segment_source_type,
                 "TARGETTYPE": segment_target_type,
+                "SOURCESUBTYPE": normalized_source_subtype,
+                "TARGETSUBTYPE": normalized_target_subtype,
                 "SOURCESYS": source_system,
                 "TARGETSYSTEM": target_system,
                 "TRANIDS": tran_ids,
@@ -6508,23 +8434,17 @@ def build_path_mapping_payload(
     step9_start = time.time()
     dd03l_inventory: Dict[str, Dict[str, Dict[str, object]]] = {}
     if odso_objects:
-        dd03l_inventory.update(fetch_odso_field_inventory_from_dd03l(sorted(odso_objects), rsiobj_names=rsiobj_names))
+        dd03l_inventory.update(fetch_materialized_dd03l_field_inventory("ODSO", sorted(odso_objects)))
     if adso_objects:
-        dd03l_inventory.update(
-            fetch_adso_field_inventory_from_dd03l(
-                sorted(adso_objects),
-                activate_data_by_object=activate_data_by_object,
-                rsiobj_names=rsiobj_names,
-            )
-        )
+        dd03l_inventory.update(fetch_materialized_dd03l_field_inventory("ADSO", sorted(adso_objects)))
     step9_end = time.time()
     
     step10_start = time.time()
-    trcs_inventory = fetch_trcs_field_inventory(sorted(trcs_objects)) if trcs_objects else {}
+    trcs_inventory = fetch_materialized_trcs_field_inventory(sorted(trcs_objects)) if trcs_objects else {}
     step10_end = time.time()
     
     step11_start = time.time()
-    iobj_inventory = fetch_iobj_field_inventory_from_dd03l(sorted(iobj_objects)) if iobj_objects else {}
+    iobj_inventory = fetch_materialized_iobj_field_inventory(sorted(iobj_objects)) if iobj_objects else {}
     step11_end = time.time()
     
     step12_start = time.time()
@@ -6564,6 +8484,8 @@ def build_path_mapping_payload(
         segment_target = str(segment.get("TARGETNAME") or "").strip()
         segment_source_type = str(segment.get("SOURCETYPE") or "").strip()
         segment_target_type = str(segment.get("TARGETTYPE") or "").strip()
+        segment_source_subtype = normalize_iobj_subtype(segment.get("SOURCESUBTYPE") or "")
+        segment_target_subtype = normalize_iobj_subtype(segment.get("TARGETSUBTYPE") or "")
         source_system = str(segment.get("SOURCESYS") or "").strip()
         target_system = str(segment.get("TARGETSYSTEM") or "").strip()
         source_display_name = resolve_path_object_display_name(
@@ -6645,7 +8567,7 @@ def build_path_mapping_payload(
                 tran_id = str(row.get("tran_id") or "").strip()
                 rule_id = int(row.get("rule_id") or 0)
                 step_id = int(row.get("step_id") or 0)
-                logic_entries = rule_entries_by_key.get((tran_id, rule_id, step_id), [])
+                logic_entries = rule_entries_by_key.get((tran_id, rule_id), [])
                 row["logic_entries"] = logic_entries
                 row["has_logic_entry"] = bool(logic_entries)
         else:
@@ -6653,7 +8575,7 @@ def build_path_mapping_payload(
                 tran_id = str(row.get("tran_id") or "").strip()
                 rule_id = int(row.get("rule_id") or 0)
                 step_id = int(row.get("step_id") or 0)
-                has_logic_entry = (tran_id, rule_id, step_id) in rule_entry_keys
+                has_logic_entry = (tran_id, rule_id) in rule_entry_keys
                 row["logic_entries"] = []
                 row["has_logic_entry"] = has_logic_entry
 
@@ -6687,12 +8609,42 @@ def build_path_mapping_payload(
                     )
                 )
 
+        source_inventory, _source_supported, _source_inventory_origin = get_supported_inventory_for_object(
+            segment_source,
+            source_system,
+            segment_source_type,
+            segment_source_subtype,
+            rsds_inventory,
+            dd03l_inventory,
+            trcs_inventory,
+            iobj_inventory,
+        )
+        target_inventory, _target_supported, _target_inventory_origin = get_supported_inventory_for_object(
+            segment_target,
+            target_system,
+            segment_target_type,
+            segment_target_subtype,
+            rsds_inventory,
+            dd03l_inventory,
+            trcs_inventory,
+            iobj_inventory,
+        )
+        mapping_rows = filter_segment_mapping_rows_by_subtype(
+            mapping_rows,
+            segment_source_type,
+            segment_source_subtype,
+            source_inventory,
+            segment_target_type,
+            segment_target_subtype,
+            target_inventory,
+        )
         source_diagnostics = build_object_field_diagnostics(
             mapping_rows,
             "source_field",
             segment_source,
             source_system,
             segment_source_type,
+            segment_source_subtype,
             object_display_name_map,
             rsds_inventory,
             dd03l_inventory,
@@ -6707,6 +8659,7 @@ def build_path_mapping_payload(
             segment_target,
             target_system,
             segment_target_type,
+            segment_target_subtype,
             object_display_name_map,
             rsds_inventory,
             dd03l_inventory,
@@ -6715,24 +8668,6 @@ def build_path_mapping_payload(
             activate_data_by_object,
             rsiobj_names,
         )
-        source_inventory, _source_supported, _source_inventory_origin = get_supported_inventory_for_object(
-            segment_source,
-            source_system,
-            segment_source_type,
-            rsds_inventory,
-            dd03l_inventory,
-            trcs_inventory,
-            iobj_inventory,
-        )
-        target_inventory, _target_supported, _target_inventory_origin = get_supported_inventory_for_object(
-            segment_target,
-            target_system,
-            segment_target_type,
-            rsds_inventory,
-            dd03l_inventory,
-            trcs_inventory,
-            iobj_inventory,
-        )
         mapping_rows = enrich_mapping_rows_with_inventory_field_metadata(
             mapping_rows,
             source_inventory,
@@ -6740,6 +8675,8 @@ def build_path_mapping_payload(
             target_inventory,
             segment_target_type,
             rsiobj_names,
+            segment_source,
+            segment_target,
         )
 
         items.append(
@@ -6749,6 +8686,8 @@ def build_path_mapping_payload(
                 "TARGETNAME": segment_target,
                 "SOURCETYPE": segment_source_type,
                 "TARGETTYPE": segment_target_type,
+                "SOURCESUBTYPE": segment_source_subtype,
+                "TARGETSUBTYPE": segment_target_subtype,
                 "SOURCESYS": source_system,
                 "TARGETSYSTEM": target_system,
                 "SOURCE_DISPLAY_NAME": source_display_name,
@@ -6817,6 +8756,8 @@ def build_path_text_payload(segments: List[PathSegmentRequest]) -> Dict[str, obj
                 "TARGETNAME": str(segment.get("TARGETNAME") or "").strip(),
                 "SOURCETYPE": str(segment.get("SOURCETYPE") or "").strip(),
                 "TARGETTYPE": str(segment.get("TARGETTYPE") or "").strip(),
+                "SOURCESUBTYPE": str(segment.get("SOURCESUBTYPE") or "").strip(),
+                "TARGETSUBTYPE": str(segment.get("TARGETSUBTYPE") or "").strip(),
                 "SOURCESYS": str(segment.get("SOURCESYS") or "").strip(),
                 "TARGETSYSTEM": str(segment.get("TARGETSYSTEM") or "").strip(),
                 "TRANIDS": [str(item or "").strip() for item in (segment.get("TRANIDS") or []) if str(item or "").strip()],
@@ -6840,6 +8781,8 @@ def build_path_logic_payload(segments: List[PathSegmentRequest]) -> Dict[str, ob
             "INCLUDE_LOGIC": True,
         }
 
+    assert_materialized_read_model_ready()
+
     prepared_segments: List[Dict[str, object]] = []
     all_tran_ids: Set[str] = set()
     for segment in segments:
@@ -6848,6 +8791,8 @@ def build_path_logic_payload(segments: List[PathSegmentRequest]) -> Dict[str, ob
         segment_target = get_segment_target_name(segment)
         segment_source_type = get_segment_source_type(segment)
         segment_target_type = get_segment_target_type(segment)
+        segment_source_subtype = get_segment_source_subtype(segment)
+        segment_target_subtype = get_segment_target_subtype(segment)
         source_system = get_segment_source_system(segment)
         target_system = get_segment_target_system(segment)
         normalized_source_type = normalize_type_code(segment_source_type)
@@ -6864,6 +8809,8 @@ def build_path_logic_payload(segments: List[PathSegmentRequest]) -> Dict[str, ob
                 "TARGETNAME": segment_target,
                 "SOURCETYPE": segment_source_type,
                 "TARGETTYPE": segment_target_type,
+                "SOURCESUBTYPE": segment_source_subtype,
+                "TARGETSUBTYPE": segment_target_subtype,
                 "SOURCESYS": source_system,
                 "TARGETSYSTEM": target_system,
                 "TRANIDS": tran_ids,
@@ -6891,7 +8838,7 @@ def build_path_logic_payload(segments: List[PathSegmentRequest]) -> Dict[str, ob
             tran_id = str(row.get("tran_id") or "").strip()
             rule_id = int(row.get("rule_id") or 0)
             step_id = int(row.get("step_id") or 0)
-            logic_entries = rule_entries_by_key.get((tran_id, rule_id, step_id), [])
+            logic_entries = rule_entries_by_key.get((tran_id, rule_id), [])
             rows.append(
                 {
                     "TRANID": tran_id,
@@ -6928,6 +8875,8 @@ def build_path_logic_payload(segments: List[PathSegmentRequest]) -> Dict[str, ob
                 "TARGETNAME": str(segment.get("TARGETNAME") or "").strip(),
                 "SOURCETYPE": str(segment.get("SOURCETYPE") or "").strip(),
                 "TARGETTYPE": str(segment.get("TARGETTYPE") or "").strip(),
+                "SOURCESUBTYPE": str(segment.get("SOURCESUBTYPE") or "").strip(),
+                "TARGETSUBTYPE": str(segment.get("TARGETSUBTYPE") or "").strip(),
                 "SOURCESYS": str(segment.get("SOURCESYS") or "").strip(),
                 "TARGETSYSTEM": str(segment.get("TARGETSYSTEM") or "").strip(),
                 "TRANIDS": [str(item or "").strip() for item in (segment.get("TRANIDS") or []) if str(item or "").strip()],
@@ -7931,14 +9880,19 @@ async def auth_guard(request: Request, call_next):
 def startup() -> None:
     if IS_SQLITE:
         ensure_status_table()
+        ensure_prog_code_schema()
+        ensure_rstran_mapping_rule_full_table()
+        ensure_bw_object_field_inventory_table()
         ensure_auth_tables()
         ensure_user_hidden_object_table()
         return
     ensure_status_table()
+    ensure_prog_code_schema()
     migrate_legacy_infoobject_tables()
     ensure_rstran_schema()
     ensure_rstran_mapping_rule_table()
     ensure_rstran_mapping_rule_full_table()
+    ensure_bw_object_field_inventory_table()
     ensure_bw_object_name_schema()
     ensure_dd03l_schema()
     ensure_dd02t_schema()
@@ -8284,7 +10238,7 @@ def get_import_status() -> Dict[str, Dict[str, str | int]]:
         }
 
     # Keep card status aligned with actual DB content, including data imported outside this app.
-    for table in ALLOWED_TABLES:
+    for table in IMPORT_STATUS_TRACKED_TABLES:
         table_name = str(table or "").strip()
         current = response.get(table_name, {"last_update": "--", "last_count": 0})
         actual_count = count_table_rows(table_name)
@@ -8354,11 +10308,153 @@ def run_data_query(payload: DataQueryRequest) -> Dict[str, object]:
 @app.post("/api/import-status/upsert")
 def upsert_import_status(payload: ImportStatusUpdate) -> Dict[str, str | int]:
     table_name = payload.table_name.strip()
-    if table_name not in ALLOWED_TABLES:
+    if table_name not in IMPORT_STATUS_TRACKED_TABLES:
         raise HTTPException(status_code=400, detail="Unsupported table_name")
 
     status = upsert_status(table_name, count_table_rows(table_name))
     return {"table_name": table_name, "last_update": status["last_update"], "last_count": status["last_count"]}
+
+
+@app.post("/api/import/prog-code/upsert")
+def upsert_prog_code(payload: ProgCodeUpsertRequest) -> Dict[str, str | int]:
+    ensure_prog_code_schema()
+
+    prog_id = str(payload.prog_id or "").strip()
+    prog_type = str(payload.prog_type or "").strip()
+    prog_code = normalize_prog_code_text(payload.prog_code)
+
+    if not prog_id:
+        raise HTTPException(status_code=400, detail="Program ID is required")
+    if len(prog_id) > 40:
+        raise HTTPException(status_code=400, detail="Program ID exceeds 40 characters")
+    if len(prog_type) > 20:
+        raise HTTPException(status_code=400, detail="Program Type exceeds 20 characters")
+    if not prog_code.strip():
+        raise HTTPException(status_code=400, detail="Program code is required")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if IS_SQLITE:
+            cur.execute(
+                f"""
+                INSERT INTO `{PROG_CODE_TABLE}` (`prog_id`, `prog_type`, `prog_code`)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (`prog_id`) DO UPDATE SET
+                  `prog_type` = excluded.`prog_type`,
+                  `prog_code` = excluded.`prog_code`,
+                  `updated_at` = CURRENT_TIMESTAMP
+                """,
+                (prog_id, prog_type, prog_code),
+            )
+        else:
+            cur.execute(
+                f"""
+                INSERT INTO `{PROG_CODE_TABLE}` (`prog_id`, `prog_type`, `prog_code`)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                  `prog_type` = VALUES(`prog_type`),
+                  `prog_code` = VALUES(`prog_code`)
+                """,
+                (prog_id, prog_type, prog_code),
+            )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+
+    status = upsert_status(PROG_CODE_TABLE, count_table_rows(PROG_CODE_TABLE))
+    return {
+        "table_name": PROG_CODE_TABLE,
+        "prog_id": prog_id,
+        "db_count": int(status["last_count"]),
+        "last_update": status["last_update"],
+        "last_count": int(status["last_count"]),
+        "line_count": len(prog_code.split("\n")),
+        "message": "Program code saved",
+    }
+
+
+@app.get("/api/import/prog-code/search")
+def search_prog_code(q: str = Query(...), limit: int = Query(default=50, ge=1, le=200)) -> Dict[str, object]:
+    ensure_prog_code_schema()
+
+    keyword = str(q or "").strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="Query keyword is required")
+
+    items = search_prog_code_entries(keyword, limit)
+    return {
+        "query": keyword,
+        "count": len(items),
+        "has_wildcard": "*" in keyword,
+        "items": items,
+    }
+
+
+@app.get("/api/import/prog-code/item")
+def get_prog_code_item(prog_id: str = Query(...)) -> Dict[str, object]:
+    ensure_prog_code_schema()
+
+    normalized_prog_id = str(prog_id or "").strip()
+    if not normalized_prog_id:
+        raise HTTPException(status_code=400, detail="Program ID is required")
+
+    entry = fetch_prog_code_exact(normalized_prog_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Program not found")
+
+    prog_code = normalize_prog_code_text(entry.get("prog_code"))
+    return {
+        "prog_id": str(entry.get("prog_id") or "").strip(),
+        "prog_type": str(entry.get("prog_type") or "").strip(),
+        "prog_code": prog_code,
+        "updated_at": str(entry.get("updated_at") or "").strip(),
+        "line_count": len(prog_code.split("\n")) if prog_code else 0,
+    }
+
+
+@app.post("/api/abap-to-sql/generate")
+def generate_abap_to_sql(payload: AbapToSqlRequest) -> Dict[str, object]:
+    ensure_prog_code_schema()
+
+    output_table = str(payload.output_table or "").strip()
+    abap_code = normalize_prog_code_text(payload.abap_code)
+
+    if len(output_table) > 20:
+        raise HTTPException(status_code=400, detail="Output table exceeds 20 characters")
+    if not abap_code.strip():
+        raise HTTPException(status_code=400, detail="ABAP code is required")
+
+    resolution = resolve_abap_call_chain(abap_code)
+    combined_parts = [abap_code] + [str(entry.get("prog_code") or "") for entry in (resolution.get("matched_entries") or [])]
+    combined_code = "\n\n".join(part for part in combined_parts if str(part or "").strip())
+    method_rules, ignored_aliases = derive_abap_method_call_rules(abap_code, resolution)
+    function_rules, function_ignored_aliases = derive_abap_function_call_rules(abap_code, resolution)
+    ignored_aliases.update(function_ignored_aliases)
+    rules = [
+        rule for rule in collect_abap_field_rules(combined_code)
+        if str(rule.get("alias") or "") not in ignored_aliases
+    ]
+    program_call_rules = method_rules + function_rules
+    program_call_rule_aliases = {str(rule.get("alias") or "") for rule in program_call_rules}
+    rules = [rule for rule in rules if str(rule.get("alias") or "") not in program_call_rule_aliases] + program_call_rules
+    comment_hints = collect_abap_comment_hints(abap_code) or collect_abap_comment_hints(combined_code)
+    processing_notes = collect_abap_processing_notes(combined_code)
+    rendered_output_table = output_table or "TARGET_TABLE"
+    location_text = build_abap_location_text(rendered_output_table, resolution)
+    sql_text = build_abap_pseudo_sql(rendered_output_table, rules, resolution, comment_hints, processing_notes, combined_code)
+
+    return {
+        "output_table": rendered_output_table,
+        "location_text": location_text,
+        "sql_text": sql_text,
+        "detected_count": len(resolution.get("detected_refs") or []),
+        "matched_count": len(resolution.get("matched_entries") or []),
+        "missing_count": len(resolution.get("missing_refs") or []),
+        "matched_programs": [entry.get("prog_id") for entry in (resolution.get("matched_entries") or [])],
+        "missing_programs": [ref.get("name") for ref in (resolution.get("missing_refs") or [])],
+    }
 
 
 @app.post("/api/path-selection/search")
@@ -8395,21 +10491,30 @@ def path_selection_mapping(payload: PathMappingRequest) -> Dict[str, object]:
             "include_logic": bool(payload.include_logic),
             "include_text": bool(payload.include_text),
         }
-    return build_path_mapping_payload(
-        payload.segments,
-        include_logic=bool(payload.include_logic),
-        include_text=bool(payload.include_text),
-    )
+    try:
+        return build_path_mapping_payload(
+            payload.segments,
+            include_logic=bool(payload.include_logic),
+            include_text=bool(payload.include_text),
+        )
+    except MaterializedReadModelNotReadyError as exc:
+        raise build_materialization_not_ready_http_exception(exc) from exc
 
 
 @app.post("/api/path-selection/text")
 def path_selection_text(payload: PathMappingRequest) -> Dict[str, object]:
-    return build_path_text_payload(payload.segments)
+    try:
+        return build_path_text_payload(payload.segments)
+    except MaterializedReadModelNotReadyError as exc:
+        raise build_materialization_not_ready_http_exception(exc) from exc
 
 
 @app.post("/api/path-selection/logic")
 def path_selection_logic(payload: PathMappingRequest) -> Dict[str, object]:
-    return build_path_logic_payload(payload.segments)
+    try:
+        return build_path_logic_payload(payload.segments)
+    except MaterializedReadModelNotReadyError as exc:
+        raise build_materialization_not_ready_http_exception(exc) from exc
 
 
 @app.post("/api/import/execute")
@@ -8699,8 +10804,8 @@ def execute_import(
 @app.post("/api/import/clear-table")
 def clear_import_table(table_name: str = Form(...)) -> Dict[str, str | int]:
     table_name = str(table_name or "").strip()
-    if table_name not in {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt"}:
-        raise HTTPException(status_code=400, detail="Only rstran, rstrant, rstranrule, rstranfield, rstranstepcnst, rstransteprout, rsoadso, rsoadsot, rsds, rsdst, rsdssegfd, rsdssegfdt, rsksnew, rsksnewt, rsksfieldnew, rsksfieldnewt, dd03l, dd02t, dd03t, dd04t, rsdiobj and rsdiobjt support clear-table in current workflow")
+    if table_name not in {"rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", PROG_CODE_TABLE}:
+        raise HTTPException(status_code=400, detail="Only rstran, rstrant, rstranrule, rstranfield, rstranstepcnst, rstransteprout, rsoadso, rsoadsot, rsds, rsdst, rsdssegfd, rsdssegfdt, rsksnew, rsksnewt, rsksfieldnew, rsksfieldnewt, dd03l, dd02t, dd03t, dd04t, rsdiobj, rsdiobjt and prog_code support clear-table in current workflow")
 
     conn = get_conn()
     cur = conn.cursor()
@@ -8760,6 +10865,29 @@ def rebuild_rstran_mapping_rule_full() -> Dict[str, str | int]:
         "target_completed_rows": int(result.get("target_completed_rows") or 0),
         "base_inserted_rows": int(result.get("base_inserted_rows") or 0),
         "base_tran_count": int(result.get("base_tran_count") or 0),
+        "inventory_inserted_rows": int(result.get("inventory_inserted_rows") or 0),
+        "inventory_object_count": int(result.get("inventory_object_count") or 0),
         "db_count": int(total_rows),
         "message": "RSTRAN full mapping rule rebuild completed after truncate",
+    }
+
+
+@app.post("/api/import/rebuild-bw-object-field-inventory")
+def rebuild_bw_object_field_inventory() -> Dict[str, str | int]:
+    try:
+        result = rebuild_bw_object_field_inventory_table()
+        total_rows = count_table_rows(BW_OBJECT_FIELD_INVENTORY_TABLE)
+    except mysql.connector.Error as exc:
+        raise HTTPException(status_code=500, detail=f"重建失败：数据库执行异常。{exc.msg}") from exc
+
+    return {
+        "table_name": BW_OBJECT_FIELD_INVENTORY_TABLE,
+        "inserted_rows": int(result.get("inserted_rows") or 0),
+        "object_count": int(result.get("object_count") or 0),
+        "odso_count": int(result.get("odso_count") or 0),
+        "adso_count": int(result.get("adso_count") or 0),
+        "trcs_count": int(result.get("trcs_count") or 0),
+        "iobj_count": int(result.get("iobj_count") or 0),
+        "db_count": int(total_rows),
+        "message": "BW object field inventory rebuild completed after truncate",
     }

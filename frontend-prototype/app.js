@@ -1,6 +1,6 @@
 (() => {
   const appTitle = String(window.__DATAFLOW_APP_TITLE__ || "转换映射查询").trim() || "转换映射查询";
-  const appVersion = String(window.__DATAFLOW_APP_VERSION__ || "2.0.0").trim() || "2.0.0";
+  const appVersion = String(window.__DATAFLOW_APP_VERSION__ || "2.0.1").trim() || "2.0.1";
   const appVersionBadge = document.getElementById("appVersionBadge");
   const appTitleText = document.getElementById("appTitleText");
   const loginTitleText = document.getElementById("loginTitleText");
@@ -19,6 +19,7 @@
     aceCore: "./vendor/ace/ace.min.js",
     aceTheme: "./vendor/ace/theme-tomorrow_night_bright.min.js",
     aceModeAbap: "./vendor/ace/mode-abap.min.js",
+    aceModeSql: "./vendor/ace/mode-sql.min.js",
     excelJs: "./vendor/exceljs/exceljs.min.js",
     xlsx: "./vendor/xlsx/xlsx.full.min.js"
   });
@@ -63,6 +64,13 @@
   const logicViewerModalShell = logicViewerModal ? logicViewerModal.querySelector(".import-shell") : null;
   const maxLogicViewerModal = document.getElementById("maxLogicViewerModal");
   const closeLogicViewerModal = document.getElementById("closeLogicViewerModal");
+  const progCodeSearchModal = document.getElementById("progCodeSearchModal");
+  const progCodeSearchModalShell = progCodeSearchModal ? progCodeSearchModal.querySelector(".import-shell") : null;
+  const progCodeSearchModalTitle = document.getElementById("progCodeSearchModalTitle");
+  const progCodeSearchModalMeta = document.getElementById("progCodeSearchModalMeta");
+  const progCodeSearchList = document.getElementById("progCodeSearchList");
+  const closeProgCodeSearchModal = document.getElementById("closeProgCodeSearchModal");
+  const cancelProgCodeSearchBtn = document.getElementById("cancelProgCodeSearchBtn");
   const logicViewerTitle = document.getElementById("logicViewerTitle");
   const logicViewerMeta = document.getElementById("logicViewerMeta");
   const logicViewerNav = document.getElementById("logicViewerNav");
@@ -98,13 +106,48 @@
   const importHeaderRowSelect = document.getElementById("importHeaderRowSelect");
   const importMeta = document.getElementById("importMeta");
   const modeQuery = document.getElementById("modeQuery");
+  const modeAbapSql = document.getElementById("modeAbapSql");
+  const modeProgCode = document.getElementById("modeProgCode");
   const modeDataQuery = document.getElementById("modeDataQuery");
   const modeUpload = document.getElementById("modeUpload");
   const queryWorkspace = document.getElementById("queryWorkspace");
+  const abapSqlWorkspace = document.getElementById("abapSqlWorkspace");
+  const progCodeWorkspace = document.getElementById("progCodeWorkspace");
   const dataQueryWorkspace = document.getElementById("dataQueryWorkspace");
   const uploadWorkspace = document.getElementById("uploadWorkspace");
-  const appTabButtons = [modeQuery, modeDataQuery, modeUpload].filter(Boolean);
-  const appTabPanels = [queryWorkspace, dataQueryWorkspace, uploadWorkspace].filter(Boolean);
+  const importRawTabBtn = document.getElementById("importRawTabBtn");
+  const importProgCodeTabBtn = document.getElementById("importProgCodeTabBtn");
+  const importRawPanel = document.getElementById("importRawPanel");
+  const progCodeIdInput = document.getElementById("progCodeIdInput");
+  const progCodeTypeInput = document.getElementById("progCodeTypeInput");
+  const progCodeTextInput = document.getElementById("progCodeTextInput");
+  const progCodeImportTime = document.getElementById("progCodeImportTime");
+  const progCodeImportCount = document.getElementById("progCodeImportCount");
+  const progCodeImportMeta = document.getElementById("progCodeImportMeta");
+  const progCodeLineCount = document.getElementById("progCodeLineCount");
+  const resetProgCodeFormBtn = document.getElementById("resetProgCodeFormBtn");
+  const clearProgCodeTableBtn = document.getElementById("clearProgCodeTableBtn");
+  const saveProgCodeBtn = document.getElementById("saveProgCodeBtn");
+  const searchProgCodeBtn = document.getElementById("searchProgCodeBtn");
+  const toggleProgCodePanelBtn = document.getElementById("toggleProgCodePanelBtn");
+  const abapSqlTargetTableInput = document.getElementById("abapSqlTargetTableInput");
+  const abapSqlInputCard = document.getElementById("abapSqlInputCard");
+  const abapSqlCodeInput = document.getElementById("abapSqlCodeInput");
+  const abapSqlLocationResult = document.getElementById("abapSqlLocationResult");
+  const abapSqlOutputInput = document.getElementById("abapSqlOutputInput");
+  const abapSqlOutputCard = document.getElementById("abapSqlOutputCard");
+  const abapSqlCodeLineCount = document.getElementById("abapSqlCodeLineCount");
+  const abapSqlOutputLineCount = document.getElementById("abapSqlOutputLineCount");
+  const resetAbapSqlInputBtn = document.getElementById("resetAbapSqlInputBtn");
+  const generateAbapSqlBtn = document.getElementById("generateAbapSqlBtn");
+  const toggleAbapSqlInputPanelBtn = document.getElementById("toggleAbapSqlInputPanelBtn");
+  const copyAbapSqlOutputBtn = document.getElementById("copyAbapSqlOutputBtn");
+  const copyAbapSqlRichBtn = document.getElementById("copyAbapSqlRichBtn");
+  const regenerateAbapSqlBtn = document.getElementById("regenerateAbapSqlBtn");
+  const clearAbapSqlOutputBtn = document.getElementById("clearAbapSqlOutputBtn");
+  const toggleAbapSqlOutputPanelBtn = document.getElementById("toggleAbapSqlOutputPanelBtn");
+  const appTabButtons = [modeQuery, modeAbapSql, modeProgCode, modeDataQuery, modeUpload].filter(Boolean);
+  const appTabPanels = [queryWorkspace, abapSqlWorkspace, progCodeWorkspace, dataQueryWorkspace, uploadWorkspace].filter(Boolean);
   const startModelInput = document.getElementById("startModelInput");
   const startSourceSystemInput = document.getElementById("startSourceSystemInput");
   const endModelInput = document.getElementById("endModelInput");
@@ -139,6 +182,9 @@
   const dataQueryClearSelectedFieldsBtn = document.getElementById("dataQueryClearSelectedFieldsBtn");
   const dataQueryApplySelectFieldsBtn = document.getElementById("dataQueryApplySelectFieldsBtn");
   const dataQueryToggleSelectFieldsBtn = document.getElementById("dataQueryToggleSelectFieldsBtn");
+  const importProcessPanel = document.getElementById("importProcessPanel");
+  const importProcessBody = document.getElementById("importProcessBody");
+  const toggleImportProcessBtn = document.getElementById("toggleImportProcessBtn");
   const dataQueryJoinConditionsList = document.getElementById("dataQueryJoinConditionsList");
   const dataQueryAddJoinConditionBtn = document.getElementById("dataQueryAddJoinConditionBtn");
   const dataQueryClearJoinConditionsBtn = document.getElementById("dataQueryClearJoinConditionsBtn");
@@ -164,6 +210,7 @@
   const exportDataQueryResultBtn = document.getElementById("exportDataQueryResultBtn");
   const pathResultActionButtons = [
     document.getElementById("exportPathResultBtn"),
+    document.getElementById("exportPathResultTsBtn"),
     document.getElementById("copySourceKeyFieldsBtn")
   ].filter(Boolean);
   const importCards = [...document.querySelectorAll(".import-card[data-table]")];
@@ -188,11 +235,31 @@
       .map((card) => [String(card.dataset.table || "").trim().toLowerCase(), card])
       .filter(([tableName]) => tableName)
   );
+  const buildCards = [...document.querySelectorAll(".import-card[data-build-key]")];
+  const buildCardElements = Object.fromEntries(
+    buildCards
+      .map((card) => [String(card.dataset.buildKey || "").trim(), card])
+      .filter(([buildKey]) => buildKey)
+  );
+  const buildCardUiElements = Object.fromEntries(
+    buildCards
+      .map((card) => [
+        String(card.dataset.buildKey || "").trim(),
+        {
+          card,
+          dependencySummary: card.querySelector(".import-card-dependency-summary"),
+          dependencyList: card.querySelector(".import-card-dependencies")
+        }
+      ])
+      .filter(([buildKey]) => buildKey)
+  );
   const rebuildRstranMappingRuleBtn = document.getElementById("rebuildRstranMappingRuleBtn");
   const rebuildRstranMappingRuleBtnTitle = document.getElementById("rebuildRstranMappingRuleBtnTitle");
   const rebuildRstranMappingRuleFullBtn = document.getElementById("rebuildRstranMappingRuleFullBtn");
   const rebuildRstranMappingRuleFullBtnTitle = document.getElementById("rebuildRstranMappingRuleFullBtnTitle");
-  const clearableImportTables = ["rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt"];
+  const buildBwObjectFieldInventoryCard = document.getElementById("buildBwObjectFieldInventoryCard");
+  const buildBwObjectFieldInventoryCardTitle = document.getElementById("buildBwObjectFieldInventoryCardTitle");
+  const clearableImportTables = ["rstran", "rstrant", "rstranrule", "rstranfield", "rstranstepcnst", "rstransteprout", "rsoadso", "rsoadsot", "rsds", "rsdst", "rsdssegfd", "rsdssegfdt", "rsksnew", "rsksnewt", "rsksfieldnew", "rsksfieldnewt", "dd03l", "dd02t", "dd03t", "dd04t", "rsdiobj", "rsdiobjt", "prog_code"];
   const importStatusElements = {
     rstran: { time: document.getElementById("importRstranTime"), count: document.getElementById("importRstranCount") },
     rstrant: { time: document.getElementById("importRstrantTime"), count: document.getElementById("importRstrantCount") },
@@ -215,9 +282,20 @@
     dd03t: { time: document.getElementById("importDd03tTime"), count: document.getElementById("importDd03tCount") },
     dd04t: { time: document.getElementById("importDd04tTime"), count: document.getElementById("importDd04tCount") },
     rsdiobj: { time: document.getElementById("importRsiobjTime"), count: document.getElementById("importRsiobjCount") },
-    rsdiobjt: { time: document.getElementById("importRsiobjtTime"), count: document.getElementById("importRsiobjtCount") }
+    rsdiobjt: { time: document.getElementById("importRsiobjtTime"), count: document.getElementById("importRsiobjtCount") },
+    prog_code: { time: progCodeImportTime, count: progCodeImportCount }
+  };
+  const buildStatusElements = {
+    bw_object_field_inventory: { time: document.getElementById("buildBwObjectFieldInventoryTime"), count: document.getElementById("buildBwObjectFieldInventoryCount"), card: buildBwObjectFieldInventoryCard },
+    rstran_mapping_rule: { time: document.getElementById("rebuildRstranMappingRuleTime"), count: document.getElementById("rebuildRstranMappingRuleCount"), card: rebuildRstranMappingRuleBtn },
+    rstran_mapping_rule_full: { time: document.getElementById("rebuildRstranMappingRuleFullTime"), count: document.getElementById("rebuildRstranMappingRuleFullCount"), card: rebuildRstranMappingRuleFullBtn }
   };
   const rebuildDependencyConfigs = {
+    bwObjectFieldInventory: {
+      actionLabel: "重建对象字段库存",
+      requiredTables: ["dd03l", "rsdssegfd", "rsksfieldnew", "rsdiobj", "rsdiobjt", "rsoadso"],
+      optionalTables: ["dd02t", "dd03t", "dd04t"]
+    },
     mappingRule: {
       actionLabel: "重建字段规则表",
       requiredTables: ["rstranrule", "rstranfield"],
@@ -226,7 +304,59 @@
     mappingRuleFull: {
       actionLabel: "重建完整字段表",
       requiredTables: ["rstran", "rstranrule", "rstranfield"],
+      requiredStatusTables: ["bw_object_field_inventory"],
       optionalTables: ["rstransteprout", "rstranstepcnst", "dd03l", "rsdssegfd", "rsksfieldnew", "rsdiobj", "rsdiobjt", "rsoadso"]
+    }
+  };
+  const buildCardConfigs = {
+    bwObjectFieldInventory: {
+      button: buildBwObjectFieldInventoryCard,
+      titleNode: buildBwObjectFieldInventoryCardTitle,
+      defaultTitle: "重建对象字段库存",
+      loadingTitle: "构建中...",
+      loadingLabel: "正在重建对象字段库存...",
+      dependencyKey: "bwObjectFieldInventory",
+      confirmMessage: "确认重建对象字段库存吗？这会先清空 bw_object_field_inventory，再基于当前对象元数据重新生成整张库存表。",
+      execute: rebuildBwObjectFieldInventoryTable,
+      buildSuccessMessage: (result) => `对象字段库存重建成功。写入：${formatCount(Number(result?.inserted_rows ?? 0))} 条；覆盖对象：${formatCount(Number(result?.object_count ?? 0))} 个；当前表总条数：${formatCount(Number(result?.db_count ?? 0))}。`,
+      statusTable: "bw_object_field_inventory",
+      dependencyGroupLabels: {
+        requiredTables: "Raw",
+        optionalTables: "Raw"
+      }
+    },
+    mappingRule: {
+      button: rebuildRstranMappingRuleBtn,
+      titleNode: rebuildRstranMappingRuleBtnTitle,
+      defaultTitle: "重建字段规则表",
+      loadingTitle: "重建中...",
+      loadingLabel: "正在重建字段规则表...",
+      dependencyKey: "mappingRule",
+      confirmMessage: "确认重建字段规则表吗？这会先清空 rstran_mapping_rule 全部数据，再重新填充整张表。",
+      execute: rebuildRstranMappingRuleTable,
+      buildSuccessMessage: (result) => `字段规则表重建成功。已先清空旧数据，再重新写入：${formatCount(Number(result?.inserted_rows ?? 0))} 条；涉及转换：${formatCount(Number(result?.tran_count ?? 0))} 个；当前表总条数：${formatCount(Number(result?.db_count ?? 0))}。后续若重新导入 RSTRANRULE 或 RSTRANFIELD，请再次执行重建。`,
+      statusTable: "rstran_mapping_rule",
+      dependencyGroupLabels: {
+        requiredTables: "Raw",
+        optionalTables: "Raw"
+      }
+    },
+    mappingRuleFull: {
+      button: rebuildRstranMappingRuleFullBtn,
+      titleNode: rebuildRstranMappingRuleFullBtnTitle,
+      defaultTitle: "重建完整字段表",
+      loadingTitle: "重建中...",
+      loadingLabel: "正在重建完整字段表...",
+      dependencyKey: "mappingRuleFull",
+      confirmMessage: "确认重建完整字段表吗？这会先刷新 rstran_mapping_rule，再清空并重建 rstran_mapping_rule_full。当前版本会补齐已支持的元数据来源：RSDS 依赖 rsdssegfd；ADSO 依赖 dd03l，并固定按 TABNAME=/BIC/A+技术名+1位数字、FIELDNAME 按 /BIC/ 去前缀或补 0 解析。",
+      execute: rebuildRstranMappingRuleFullTable,
+      buildSuccessMessage: (result) => `完整字段表重建成功。写入：${formatCount(Number(result?.inserted_rows ?? 0))} 条；涉及转换：${formatCount(Number(result?.tran_count ?? 0))} 个；基础映射：${formatCount(Number(result?.mapped_rows ?? 0))} 条；补齐 source：${formatCount(Number(result?.source_completed_rows ?? 0))} 条；补齐 target：${formatCount(Number(result?.target_completed_rows ?? 0))} 条；当前表总条数：${formatCount(Number(result?.db_count ?? 0))}。`,
+      statusTable: "rstran_mapping_rule_full",
+      dependencyGroupLabels: {
+        requiredTables: "Raw",
+        requiredStatusTables: "Build",
+        optionalTables: "Raw"
+      }
     }
   };
   let latestImportStatusPayload = {};
@@ -259,19 +389,303 @@
   }
 
   async function ensureAceAssetsLoaded() {
-    if (window.ace) return window.ace;
+    if (window.ace) {
+      registerCustomAceSqlMode(window.ace);
+      return window.ace;
+    }
     await loadVendorScriptOnce(VENDOR_ASSET_URLS.aceCore);
     if (window.ace?.config && typeof window.ace.config.set === "function") {
       window.ace.config.set("basePath", "./vendor/ace");
     }
     await Promise.all([
       loadVendorScriptOnce(VENDOR_ASSET_URLS.aceTheme),
-      loadVendorScriptOnce(VENDOR_ASSET_URLS.aceModeAbap)
+      loadVendorScriptOnce(VENDOR_ASSET_URLS.aceModeAbap),
+      loadVendorScriptOnce(VENDOR_ASSET_URLS.aceModeSql)
     ]);
     if (!window.ace) {
       throw new Error("ACE editor failed to initialize.");
     }
+    registerCustomAceSqlMode(window.ace);
     return window.ace;
+  }
+
+  function registerCustomAceSqlMode(aceApi) {
+    if (!aceApi?.define || !aceApi?.require) return;
+    try {
+      aceApi.require("ace/mode/sql");
+      return;
+    } catch {
+      // Fallback to a local SQL mode when the bundled asset is unavailable.
+    }
+
+    aceApi.define("ace/mode/sql_highlight_rules", ["require", "exports", "module", "ace/lib/oop", "ace/mode/text_highlight_rules"], (require, exports, module) => {
+      const oop = require("ace/lib/oop");
+      const TextHighlightRules = require("ace/mode/text_highlight_rules").TextHighlightRules;
+
+      const SqlHighlightRules = function() {
+        const keywords = [
+          "select", "from", "where", "update", "set", "insert", "into", "delete", "join", "left", "right", "inner", "outer",
+          "on", "and", "or", "not", "in", "is", "null", "like", "between", "exists", "distinct", "as", "case", "when",
+          "then", "else", "end", "with", "union", "all", "group", "by", "order", "having", "limit", "offset", "create",
+          "alter", "drop", "table", "view", "if", "begin", "commit", "rollback", "values"
+        ].join("|");
+        const builtinConstants = "true|false|unknown";
+        const builtinFunctions = [
+          "count", "sum", "avg", "min", "max", "coalesce", "replace", "cast", "convert", "upper", "lower", "trim", "substr",
+          "substring", "nvl", "ifnull", "decode"
+        ].join("|");
+        const keywordMapper = this.createKeywordMapper({
+          keyword: keywords,
+          "constant.language": builtinConstants,
+          "support.function": builtinFunctions
+        }, "identifier", true);
+
+        this.$rules = {
+          start: [
+            { token: "comment", regex: /--.*$/ },
+            { token: "comment", regex: /\/\*/, next: "blockComment" },
+            { token: "string", regex: /'/, next: "singleQuotedString" },
+            { token: "string", regex: /\"(?:[^\"]|\"\")*\"/ },
+            { token: "constant.numeric", regex: /\b\d+(?:\.\d+)?\b/ },
+            { token: keywordMapper, regex: /[A-Za-z_/$][A-Za-z0-9_/$]*/ },
+            { token: "keyword.operator", regex: /\+|\-|\/|%|<>|!=|<=|>=|=|<|>/ },
+            { token: "paren.lparen", regex: /[\(]/ },
+            { token: "paren.rparen", regex: /[\)]/ },
+            { token: "punctuation.operator", regex: /[,.;]/ },
+            { token: "text", regex: /\s+/ }
+          ],
+          blockComment: [
+            { token: "comment", regex: /.*?\*\//, next: "start" },
+            { defaultToken: "comment" }
+          ],
+          singleQuotedString: [
+            { token: "string", regex: /''/ },
+            { token: "string", regex: /'/, next: "start" },
+            { defaultToken: "string" }
+          ]
+        };
+        this.normalizeRules();
+      };
+
+      oop.inherits(SqlHighlightRules, TextHighlightRules);
+      exports.SqlHighlightRules = SqlHighlightRules;
+    });
+
+    aceApi.define("ace/mode/sql", ["require", "exports", "module", "ace/lib/oop", "ace/mode/text", "ace/mode/sql_highlight_rules"], (require, exports, module) => {
+      const oop = require("ace/lib/oop");
+      const TextMode = require("ace/mode/text").Mode;
+      const SqlHighlightRules = require("ace/mode/sql_highlight_rules").SqlHighlightRules;
+
+      const Mode = function() {
+        this.HighlightRules = SqlHighlightRules;
+        this.lineCommentStart = "--";
+        this.blockComment = { start: "/*", end: "*/" };
+        this.$behaviour = this.$defaultBehaviour;
+      };
+
+      oop.inherits(Mode, TextMode);
+      Mode.prototype.$id = "ace/mode/sql";
+      exports.Mode = Mode;
+    });
+  }
+
+  function createAbapSqlAceEditor(textarea, language, { readOnly = false, ariaLabel = "Code editor" } = {}) {
+    const aceApi = window.ace;
+    if (!aceApi || !textarea) return null;
+
+    const host = document.createElement("div");
+    host.className = `abap-sql-ace-editor ${readOnly ? "is-readonly" : "is-editable"}`;
+    textarea.insertAdjacentElement("afterend", host);
+    textarea.hidden = true;
+    textarea.setAttribute("aria-hidden", "true");
+
+    const normalizeEditorWhitespace = (value) => String(value || "").replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+
+    const editor = aceApi.edit(host, {
+      readOnly,
+      highlightActiveLine: true,
+      highlightGutterLine: false,
+      showPrintMargin: false,
+      showFoldWidgets: false,
+      showLineNumbers: true,
+      showGutter: true,
+      tabSize: 2,
+      useSoftTabs: true,
+      wrap: true,
+      fontSize: 13,
+      scrollPastEnd: 0.08,
+      theme: "ace/theme/tomorrow_night_bright",
+      mode: getAceModeForLanguage(language)
+    });
+    editor.setOptions({
+      animatedScroll: true,
+      behavioursEnabled: !readOnly,
+      displayIndentGuides: true,
+      dragEnabled: !readOnly,
+      enableBasicAutocompletion: false,
+      enableLiveAutocompletion: false,
+      enableMultiselect: !readOnly,
+      enableSnippets: false,
+      highlightSelectedWord: true,
+      newLineMode: "unix",
+      showInvisibles: false,
+      useWorker: false
+    });
+    editor.renderer.setPadding(16);
+    editor.setShowInvisibles(false);
+    editor.renderer.setScrollMargin(12, 12, 8, 0);
+    editor.session.setUseWrapMode(true);
+    editor.session.setWrapLimitRange(null, null);
+    editor.session.setNewLineMode("unix");
+    editor.container.setAttribute("aria-label", ariaLabel);
+    editor.container.setAttribute("role", "textbox");
+    editor.container.setAttribute("aria-multiline", "true");
+    editor.container.setAttribute("aria-readonly", readOnly ? "true" : "false");
+    editor.setValue(normalizeEditorWhitespace(String(textarea.value || "")), -1);
+    editor.clearSelection();
+    let syncingNormalizedWhitespace = false;
+    editor.session.on("change", () => {
+      const currentValue = editor.getValue();
+      const normalizedValue = normalizeEditorWhitespace(currentValue);
+      if (!syncingNormalizedWhitespace && currentValue !== normalizedValue) {
+        syncingNormalizedWhitespace = true;
+        const cursor = editor.getCursorPosition();
+        editor.setValue(normalizedValue, -1);
+        editor.moveCursorToPosition(cursor);
+        editor.clearSelection();
+        syncingNormalizedWhitespace = false;
+      }
+      textarea.value = normalizeEditorWhitespace(editor.getValue());
+      if (textarea === abapSqlCodeInput) {
+        updateAbapSqlCodeLineCount();
+      }
+      if (textarea === abapSqlOutputInput) {
+        updateAbapSqlOutputLineCount();
+      }
+      if (textarea === progCodeTextInput) {
+        updateProgCodeLineCount();
+      }
+    });
+    return editor;
+  }
+
+  async function initializeAbapSqlEditors() {
+    if ((!abapSqlCodeInput && !abapSqlOutputInput) || (abapSqlCodeEditor && abapSqlOutputEditor)) {
+      return;
+    }
+    try {
+      await ensureAceAssetsLoaded();
+    } catch {
+      return;
+    }
+
+    if (abapSqlCodeInput && !abapSqlCodeEditor) {
+      abapSqlCodeEditor = createAbapSqlAceEditor(abapSqlCodeInput, "abap", {
+        readOnly: false,
+        ariaLabel: "ABAP CODE editor"
+      });
+    }
+    if (abapSqlOutputInput && !abapSqlOutputEditor) {
+      abapSqlOutputEditor = createAbapSqlAceEditor(abapSqlOutputInput, "sql", {
+        readOnly: false,
+        ariaLabel: "SQL output editor"
+      });
+    }
+    resizeAbapSqlEditors();
+  }
+
+  async function initializeProgCodeEditor() {
+    if (!progCodeTextInput || progCodeAceEditor) {
+      return;
+    }
+    try {
+      await ensureAceAssetsLoaded();
+    } catch {
+      return;
+    }
+
+    progCodeAceEditor = createAbapSqlAceEditor(progCodeTextInput, "abap", {
+      readOnly: false,
+      ariaLabel: "PROG_CODE editor"
+    });
+    resizeCodeEditors();
+    updateProgCodeLineCount();
+  }
+
+  function resizeAbapSqlEditors() {
+    window.requestAnimationFrame(() => {
+      abapSqlCodeEditor?.resize();
+      abapSqlOutputEditor?.resize();
+    });
+  }
+
+  function resizeCodeEditors() {
+    window.requestAnimationFrame(() => {
+      abapSqlCodeEditor?.resize();
+      abapSqlOutputEditor?.resize();
+      progCodeAceEditor?.resize();
+    });
+  }
+
+  function getAbapSqlCodeEditorText() {
+    return abapSqlCodeEditor ? abapSqlCodeEditor.getValue() : String(abapSqlCodeInput?.value || "");
+  }
+
+  function setAbapSqlCodeEditorText(text) {
+    const nextText = String(text || "").replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+    if (abapSqlCodeEditor) {
+      abapSqlCodeEditor.setValue(nextText, -1);
+      abapSqlCodeEditor.clearSelection();
+    }
+    if (abapSqlCodeInput) {
+      abapSqlCodeInput.value = nextText;
+    }
+  }
+
+  function focusAbapSqlCodeEditor() {
+    if (abapSqlCodeEditor) {
+      abapSqlCodeEditor.focus();
+      return;
+    }
+    abapSqlCodeInput?.focus();
+  }
+
+  function getProgCodeEditorText() {
+    return progCodeAceEditor ? progCodeAceEditor.getValue() : String(progCodeTextInput?.value || "");
+  }
+
+  function setProgCodeEditorText(text) {
+    const nextText = String(text || "").replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+    if (progCodeAceEditor) {
+      progCodeAceEditor.setValue(nextText, -1);
+      progCodeAceEditor.clearSelection();
+    }
+    if (progCodeTextInput) {
+      progCodeTextInput.value = nextText;
+    }
+  }
+
+  function focusProgCodeEditor() {
+    if (progCodeAceEditor) {
+      progCodeAceEditor.focus();
+      return;
+    }
+    progCodeTextInput?.focus();
+  }
+
+  function getAbapSqlOutputEditorText() {
+    return abapSqlOutputEditor ? abapSqlOutputEditor.getValue() : String(abapSqlOutputInput?.value || "");
+  }
+
+  function setAbapSqlOutputEditorText(text) {
+    const nextText = String(text || "").replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+    if (abapSqlOutputEditor) {
+      abapSqlOutputEditor.setValue(nextText, -1);
+      abapSqlOutputEditor.clearSelection();
+    }
+    if (abapSqlOutputInput) {
+      abapSqlOutputInput.value = nextText;
+    }
   }
 
   async function ensureExcelJsLoaded() {
@@ -395,6 +809,7 @@
     { modal: userAdminModal, shell: userAdminModalShell },
     { modal: createUserModal, shell: createUserModalShell },
     { modal: adminResetUserModal, shell: adminResetUserModalShell },
+    { modal: progCodeSearchModal, shell: progCodeSearchModalShell },
     { modal: logicViewerModal, shell: logicViewerModalShell }
   ].filter((entry) => entry.modal && entry.shell);
   let modalZIndexSeed = 2000;
@@ -491,6 +906,7 @@
   let activeImportSheetNames = [];
   let activeImportFileName = "";
   let activeImportDataRowCount = 0;
+  let activeImportSubtab = "raw";
   let toastTimer = null;
   let loginLockCountdownTimer = null;
   let loginLockRemainingSeconds = 0;
@@ -521,6 +937,7 @@
   const MAPPING_FIELD_INFO_LENGTH_MIN_WIDTH = 76;
   const MAPPING_FIELD_INFO_DECIMALS_MIN_WIDTH = 82;
   let isPathSelectionCollapsed = false;
+  let isImportProcessCollapsed = true;
   let autoCollapsePathSelection = true;
   let dataQueryTables = [];
   let dataQueryTablesLoadPromise = null;
@@ -551,6 +968,7 @@
     panelCollapsed: false,
     filters: [],
   };
+  let abapSqlGenerateLock = false;
 
   function getStoredAuthToken() {
     try {
@@ -590,6 +1008,10 @@
   let activeLogicViewerIndex = 0;
   let activeLogicViewerContext = null;
   let logicViewerAceEditor = null;
+  let abapSqlCodeEditor = null;
+  let abapSqlOutputEditor = null;
+  let progCodeAceEditor = null;
+  let activeProgCodeSearchResults = [];
 
   function clampNumber(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -1212,11 +1634,19 @@
   ];
   const PATH_EXPORT_TEMPLATE_URL = "./Assets/Download%20template.xlsx";
   const PATH_EXPORT_TEMPLATE_SHEET = "Aligned Mapping";
-  const PATH_EXPORT_BLOCK_WIDTH = 17;
+  const PATH_EXPORT_BLOCK_WIDTH = 18;
   const PATH_EXPORT_TEMPLATE_URL_CANDIDATES = [
     "./Assets/Download%20template.xlsx",
     "./Assets/Download template.xlsx"
   ];
+  const PATH_EXPORT_TS_TEMPLATE_SHEET = "Aligned Mapping";
+  const PATH_EXPORT_TS_BLOCK_WIDTH = 14;
+  const PATH_EXPORT_TS_TEMPLATE_URL_CANDIDATES = [
+    "./Assets/Download%20template-TS.xlsx",
+    "./Assets/Download template-TS.xlsx"
+  ];
+  const PATH_EXPORT_TS_HEADER_ROW = 13;
+  const PATH_EXPORT_TS_DATA_START_ROW = 14;
   const PATH_EXPORT_DEFAULT_STEP_TITLE_ROW = 1;
   const PATH_EXPORT_DEFAULT_TRANSFORMATION_ROW = 2;
   const PATH_EXPORT_DEFAULT_ROUTINE_START_ROW = 8;
@@ -1294,6 +1724,24 @@
 
   function renderTranIdIcon() {
     return `<span class="mapping-tran-id-icon-wrap" aria-hidden="true"><img class="mapping-tran-id-icon" src="Assets/Icons/Transformation.png" alt="" /></span>`;
+  }
+
+  function renderTranInfoBlock(tranLabel, tranCopyValue, trNameLabel, trNameCopyValue) {
+    const tranCopyMarkup = tranCopyValue
+      ? renderCopyIconButton(tranCopyValue, "转换ID", "mapping-copy-btn-inline mapping-copy-btn-header")
+      : "";
+    const trNameCopyMarkup = trNameCopyValue
+      ? renderCopyIconButton(trNameCopyValue, "转换名称", "mapping-copy-btn-inline mapping-copy-btn-header")
+      : "";
+    return `
+      <div class="mapping-step-header-stack-line mapping-step-header-tran-block">
+        ${renderTranIdIcon()}
+        <div class="mapping-step-tran-lines">
+          <div class="mapping-step-header-tran-line"><span class="mapping-step-tran-text">${esc(tranLabel)}</span>${tranCopyMarkup}</div>
+          <div class="mapping-step-header-tran-line mapping-step-header-subline"><span class="mapping-step-tran-text">${esc(trNameLabel)}</span>${trNameCopyMarkup}</div>
+        </div>
+      </div>
+    `;
   }
 
   function renderContextCopyText(value, valueClassName, copyLabel = "字段名") {
@@ -1712,12 +2160,99 @@
     return normalized.toUpperCase();
   }
 
+  function getStatusDisplayName(statusKey) {
+    const normalized = String(statusKey || "").trim().toLowerCase();
+    if (!normalized) return "--";
+    const importName = getImportTableDisplayName(normalized);
+    if (importName && importName !== normalized.toUpperCase()) {
+      return importName;
+    }
+    const buildCard = buildStatusElements[normalized]?.card;
+    const buildTitle = String(buildCard?.querySelector(".import-card-title")?.textContent || "").trim();
+    return buildTitle || normalized.toUpperCase();
+  }
+
   function getImportTableCount(statusPayload, tableName) {
     const normalized = String(tableName || "").trim().toLowerCase();
     const statusCount = Number(statusPayload?.[normalized]?.last_count);
     if (Number.isFinite(statusCount)) return statusCount;
-    const fallbackText = importStatusElements[normalized]?.count?.textContent || "0";
+    const fallbackText = importStatusElements[normalized]?.count?.textContent || buildStatusElements[normalized]?.count?.textContent || "0";
     return parseDisplayedCount(fallbackText);
+  }
+
+  function getBuildDependencyEntries(buildKey) {
+    const config = buildCardConfigs[buildKey];
+    const dependencyConfig = rebuildDependencyConfigs[config?.dependencyKey] || {};
+    const groupLabels = config?.dependencyGroupLabels || {};
+    const buildEntries = (key, required) => (dependencyConfig[key] || []).map((tableName) => ({
+      tableName,
+      required,
+      groupLabel: groupLabels[key] || "Raw",
+      priorityLabel: required ? "必需" : "可选"
+    }));
+
+    return [
+      ...buildEntries("requiredTables", true),
+      ...buildEntries("requiredStatusTables", true),
+      ...buildEntries("optionalTables", false),
+      ...buildEntries("optionalStatusTables", false)
+    ];
+  }
+
+  function renderBuildDependencyState(buildKey, statusPayload = latestImportStatusPayload) {
+    const refs = buildCardUiElements[buildKey];
+    const config = buildCardConfigs[buildKey];
+    if (!refs?.card || !config) return;
+
+    const entries = getBuildDependencyEntries(buildKey);
+    if (!entries.length) {
+      if (refs.dependencySummary) refs.dependencySummary.textContent = "依赖状态：无前置依赖";
+      if (refs.dependencyList) refs.dependencyList.innerHTML = "";
+      refs.card.classList.remove("is-dependency-ready", "is-dependency-warning", "is-dependency-blocked");
+      refs.card.classList.add("is-dependency-ready");
+      refs.card.dataset.dependencyState = "ready";
+      return;
+    }
+
+    const enriched = entries.map((entry) => {
+      const count = getImportTableCount(statusPayload, entry.tableName);
+      return {
+        ...entry,
+        count,
+        ready: count > 0
+      };
+    });
+    const requiredEntries = enriched.filter((entry) => entry.required);
+    const missingRequired = requiredEntries.filter((entry) => !entry.ready);
+    const missingOptional = enriched.filter((entry) => !entry.required && !entry.ready);
+    const state = missingRequired.length ? "blocked" : (missingOptional.length ? "warning" : "ready");
+
+    if (refs.dependencySummary) {
+      if (missingRequired.length) {
+        refs.dependencySummary.textContent = `依赖状态：缺少 ${missingRequired.length} 个必需项`;
+      } else if (missingOptional.length) {
+        refs.dependencySummary.textContent = `依赖状态：必需项已就绪，可选项缺少 ${missingOptional.length} 个`;
+      } else {
+        refs.dependencySummary.textContent = `依赖状态：全部就绪（${requiredEntries.length}/${requiredEntries.length} 必需项）`;
+      }
+    }
+
+    if (refs.dependencyList) {
+      refs.dependencyList.innerHTML = enriched.map((entry) => {
+        const pillState = entry.ready ? "is-ready" : (entry.required ? "is-missing" : "is-optional-empty");
+        const stateText = entry.ready ? `就绪 ${formatCount(entry.count)}` : (entry.required ? "缺失" : "可选为空");
+        const priorityClass = entry.required ? "is-required" : "is-optional";
+        return `<span class="import-dependency-pill ${pillState}"><span class="import-dependency-pill-priority ${priorityClass}">${esc(entry.priorityLabel)}</span><span class="import-dependency-pill-kind">${esc(entry.groupLabel)}</span><span class="import-dependency-pill-name">${esc(getStatusDisplayName(entry.tableName))}</span><span class="import-dependency-pill-state">${esc(stateText)}</span></span>`;
+      }).join("");
+    }
+
+    refs.card.classList.remove("is-dependency-ready", "is-dependency-warning", "is-dependency-blocked");
+    refs.card.classList.add(`is-dependency-${state}`);
+    refs.card.dataset.dependencyState = state;
+  }
+
+  function renderAllBuildDependencyStates(statusPayload = latestImportStatusPayload) {
+    Object.keys(buildCardConfigs).forEach((buildKey) => renderBuildDependencyState(buildKey, statusPayload));
   }
 
   function applyImportStatusPayload(payload) {
@@ -1737,6 +2272,22 @@
         card.dataset.importStateLabel = hasImportedData ? "已导入" : "未导入";
       }
     });
+
+    Object.entries(buildStatusElements).forEach(([tableName, refs]) => {
+      const time = latestImportStatusPayload?.[tableName]?.last_update || "--";
+      const count = getImportTableCount(latestImportStatusPayload, tableName);
+      if (refs.time) refs.time.textContent = time;
+      if (refs.count) refs.count.textContent = formatCount(count);
+      if (refs.card) {
+        const hasBuiltData = count > 0;
+        refs.card.classList.toggle("is-imported", hasBuiltData);
+        refs.card.classList.toggle("is-empty", !hasBuiltData);
+        refs.card.dataset.importState = hasBuiltData ? "imported" : "empty";
+        refs.card.dataset.importStateLabel = hasBuiltData ? "已构建" : "未构建";
+      }
+    });
+
+    renderAllBuildDependencyStates(latestImportStatusPayload);
   }
 
   async function refreshImportStatusSnapshot() {
@@ -1756,13 +2307,13 @@
       statusPayload = latestImportStatusPayload;
     }
 
-    const missingRequired = (config.requiredTables || []).filter((tableName) => getImportTableCount(statusPayload, tableName) <= 0);
+    const missingRequired = [...(config.requiredTables || []), ...(config.requiredStatusTables || [])].filter((tableName) => getImportTableCount(statusPayload, tableName) <= 0);
     if (missingRequired.length) {
       showToast(
-        `${config.actionLabel}前缺少前提表数据，请先导入：${missingRequired.map(getImportTableDisplayName).join("、")}。`,
+        `${config.actionLabel}前缺少前提数据，请先补齐：${missingRequired.map(getStatusDisplayName).join("、")}。`,
         "error",
         {
-          title: "缺少前提表",
+          title: "缺少前提数据",
           blocking: true,
           actions: true,
           requireClose: true,
@@ -1772,16 +2323,16 @@
       return false;
     }
 
-    const missingOptional = (config.optionalTables || []).filter((tableName) => getImportTableCount(statusPayload, tableName) <= 0);
+    const missingOptional = [...(config.optionalTables || []), ...(config.optionalStatusTables || [])].filter((tableName) => getImportTableCount(statusPayload, tableName) <= 0);
     if (!missingOptional.length) {
       return true;
     }
 
     const decision = await showToastAndWait(
-      `${config.actionLabel}可继续执行，但以下补充表当前为空：${missingOptional.map(getImportTableDisplayName).join("、")}。继续后结果可能不完整，是否继续？`,
+      `${config.actionLabel}可继续执行，但以下补充数据当前为空：${missingOptional.map(getStatusDisplayName).join("、")}。继续后结果可能不完整，是否继续？`,
       "warning",
       {
-        title: "补充表为空",
+        title: "补充数据为空",
         primaryLabel: "继续执行",
         primaryValue: "continue",
         secondaryLabel: "取消",
@@ -1807,6 +2358,23 @@
       togglePathSelectionBtn.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
       togglePathSelectionBtn.setAttribute("title", nextCollapsed ? "展开 Path Selection" : "收起 Path Selection");
       togglePathSelectionBtn.setAttribute("aria-label", nextCollapsed ? "展开 Path Selection" : "收起 Path Selection");
+    }
+  }
+
+  function setImportProcessCollapsed(collapsed) {
+    const nextCollapsed = !!collapsed;
+    isImportProcessCollapsed = nextCollapsed;
+    if (importProcessPanel) {
+      importProcessPanel.classList.toggle("is-collapsed", nextCollapsed);
+    }
+    if (importProcessBody) {
+      importProcessBody.classList.toggle("hidden", nextCollapsed);
+    }
+    if (toggleImportProcessBtn) {
+      toggleImportProcessBtn.classList.toggle("is-collapsed", nextCollapsed);
+      toggleImportProcessBtn.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+      toggleImportProcessBtn.setAttribute("title", nextCollapsed ? "展开数据处理" : "收起数据处理");
+      toggleImportProcessBtn.setAttribute("aria-label", nextCollapsed ? "展开数据处理" : "收起数据处理");
     }
   }
 
@@ -4238,11 +4806,29 @@
     if (toastIsBlocking) return;
     const normalized = String(tabName || "home").trim().toLowerCase() || "home";
     const isHome = normalized === "home";
+    const isAbapSql = normalized === "abapsql";
+    const isProgCode = normalized === "progcode";
     const isDataQuery = normalized === "dataquery";
     const isImport = normalized === "import";
+    if (!isProgCode) {
+      setProgCodePanelMaximized(false);
+      closeProgCodeSearchModalPanel();
+    }
+    if (!isAbapSql) {
+      setAbapSqlInputPanelMaximized(false);
+      setAbapSqlOutputPanelMaximized(false);
+    }
     if (modeQuery) {
       modeQuery.classList.toggle("active", isHome);
       modeQuery.setAttribute("aria-selected", isHome ? "true" : "false");
+    }
+    if (modeAbapSql) {
+      modeAbapSql.classList.toggle("active", isAbapSql);
+      modeAbapSql.setAttribute("aria-selected", isAbapSql ? "true" : "false");
+    }
+    if (modeProgCode) {
+      modeProgCode.classList.toggle("active", isProgCode);
+      modeProgCode.setAttribute("aria-selected", isProgCode ? "true" : "false");
     }
     if (modeDataQuery) {
       modeDataQuery.classList.toggle("active", isDataQuery);
@@ -4256,6 +4842,14 @@
       queryWorkspace.classList.toggle("is-active", isHome);
       queryWorkspace.classList.toggle("hidden", !isHome);
     }
+    if (abapSqlWorkspace) {
+      abapSqlWorkspace.classList.toggle("is-active", isAbapSql);
+      abapSqlWorkspace.classList.toggle("hidden", !isAbapSql);
+    }
+    if (progCodeWorkspace) {
+      progCodeWorkspace.classList.toggle("is-active", isProgCode);
+      progCodeWorkspace.classList.toggle("hidden", !isProgCode);
+    }
     if (dataQueryWorkspace) {
       dataQueryWorkspace.classList.toggle("is-active", isDataQuery);
       dataQueryWorkspace.classList.toggle("hidden", !isDataQuery);
@@ -4265,12 +4859,24 @@
       uploadWorkspace.classList.toggle("hidden", !isImport);
     }
     if (isImport) {
+      switchImportSubtab(activeImportSubtab);
+      if (!importStatusLoadedOnce || importStatusLoadPromise) {
+        void withImportCardsRefreshLoading("正在刷新导入状态...", async () => ensureImportCardTimesLoaded());
+      }
+    }
+    if (isProgCode) {
       if (!importStatusLoadedOnce || importStatusLoadPromise) {
         void withImportCardsRefreshLoading("正在刷新导入状态...", async () => ensureImportCardTimesLoaded());
       }
     }
     if (isDataQuery) {
       void hydrateDataQueryWorkspace();
+    }
+    if (isAbapSql) {
+      void initializeAbapSqlEditors().then(() => resizeCodeEditors());
+    }
+    if (isProgCode) {
+      void initializeProgCodeEditor().then(() => resizeCodeEditors());
     }
   }
 
@@ -4302,6 +4908,20 @@
   function getPathSegmentTrNames(segment) {
     const values = Array.isArray(segment?.TR_NAMES) ? segment.TR_NAMES : (Array.isArray(segment?.tr_names) ? segment.tr_names : []);
     return values.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+
+  function normalizePathSubtype(value) {
+    const normalized = String(value || "").trim().toUpperCase();
+    return normalized === "ATTR" || normalized === "TEXT" ? normalized : "";
+  }
+
+  function formatPathTypeLabel(typeValue, subtypeValue) {
+    const normalizedType = normalizePathObjectType(typeValue);
+    const normalizedSubtype = normalizePathSubtype(subtypeValue);
+    if (normalizedType === "IOBJ" && normalizedSubtype) {
+      return `${normalizedType} / ${normalizedSubtype}`;
+    }
+    return normalizedType || String(typeValue || "").trim();
   }
 
   function getPathCandidatePaths(result) {
@@ -4419,6 +5039,7 @@
       SOURCE_FIELD_MATCHED: Number(row?.SOURCE_FIELD_MATCHED || row?.source_field_matched || 0),
       TARGET_FIELD_MATCHED: Number(row?.TARGET_FIELD_MATCHED || row?.target_field_matched || 0),
       RULE: String(row?.RULE || row?.rule || row?.rule_type || "").trim(),
+      GROUPTYPE: String(row?.GROUPTYPE || row?.group_type || "").trim(),
       AGGR: String(row?.AGGR || row?.aggr || "").trim(),
       ROW_KIND: String(row?.ROW_KIND || row?.row_kind || "").trim(),
       LOGIC_ENTRIES: (Array.isArray(row?.LOGIC_ENTRIES) ? row.LOGIC_ENTRIES : (Array.isArray(row?.logic_entries) ? row.logic_entries : []))
@@ -4438,6 +5059,8 @@
       TARGETNAME: String(segment?.TARGETNAME || segment?.target || "").trim(),
       SOURCETYPE: String(segment?.SOURCETYPE || segment?.source_type || "").trim(),
       TARGETTYPE: String(segment?.TARGETTYPE || segment?.target_type || "").trim(),
+      SOURCESUBTYPE: normalizePathSubtype(segment?.SOURCESUBTYPE || segment?.source_subtype || ""),
+      TARGETSUBTYPE: normalizePathSubtype(segment?.TARGETSUBTYPE || segment?.target_subtype || ""),
       SOURCESYS: String(segment?.SOURCESYS || segment?.source_system || "").trim(),
       TARGETSYSTEM: String(segment?.TARGETSYSTEM || segment?.target_system || "").trim(),
       SOURCE_DISPLAY_NAME: String(segment?.SOURCE_DISPLAY_NAME || segment?.source_display_name || "").trim(),
@@ -4483,6 +5106,7 @@
             id: String(node?.id || "").trim(),
             OBJECT_NAME: String(node?.OBJECT_NAME || node?.object_name || "").trim(),
             TYPE: String(node?.TYPE || node?.type || "").trim(),
+            SUBTYPE: normalizePathSubtype(node?.SUBTYPE || node?.subtype || ""),
             SOURCESYS: String(node?.SOURCESYS || "").trim()
           })),
         WAYPOINTS_HIT: (Array.isArray(path?.WAYPOINTS_HIT) ? path.WAYPOINTS_HIT : (Array.isArray(path?.waypoints_hit) ? path.waypoints_hit : []))
@@ -4530,6 +5154,8 @@
       TARGETNAME: getPathSegmentValue(segment, "TARGETNAME"),
       SOURCETYPE: getPathSegmentValue(segment, "SOURCETYPE"),
       TARGETTYPE: getPathSegmentValue(segment, "TARGETTYPE"),
+      SOURCESUBTYPE: getPathSegmentValue(segment, "SOURCESUBTYPE"),
+      TARGETSUBTYPE: getPathSegmentValue(segment, "TARGETSUBTYPE"),
       SOURCESYS: getPathSegmentValue(segment, "SOURCESYS"),
       TARGETSYSTEM: getPathSegmentValue(segment, "TARGETSYSTEM"),
       TRANIDS: getPathSegmentTranIds(segment)
@@ -5331,6 +5957,12 @@
     };
   }
 
+  function shouldEnableRuleLogicTrigger(rule, hasLogicEntry = false) {
+    if (hasLogicEntry) return true;
+    const normalizedRule = String(rule || "").trim().toUpperCase();
+    return normalizedRule === "CONSTANT" || normalizedRule === "FORMULA" || normalizedRule === "ROUTINE";
+  }
+
   function createAgGridRuleCellRenderer(segmentIndex = -1) {
     return class MappingRuleCellRenderer {
       init(params) {
@@ -5350,12 +5982,11 @@
         const tranId = String(data?.[`tranId_${segmentIndex}`] || "").trim();
         const ruleId = Number(data?.[`ruleId_${segmentIndex}`] || 0);
         const stepId = Number(data?.[`stepId_${segmentIndex}`] || 0);
-        const logicEntryCount = Number(data?.[`logicEntryCount_${segmentIndex}`] || 0);
         const hasLogicEntry = Boolean(data?.[`hasLogicEntry_${segmentIndex}`]);
         const showSupplementedX = Boolean(targetField) && !sourceField && !rule && !aggr;
         this.gui.innerHTML = renderMappingRuleDisplay(rule, {
           showSupplementedX,
-          logicViewerAttrs: (logicEntryCount > 0 || hasLogicEntry) ? {
+          logicViewerAttrs: shouldEnableRuleLogicTrigger(rule, hasLogicEntry) ? {
             "data-rule-logic-open": "1",
             "data-segment-index": String(segmentIndex),
             "data-tran-id": tranId,
@@ -5607,6 +6238,7 @@
         record[`targetLength_${segmentIndex}`] = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_LENGTH"));
         record[`targetDecimals_${segmentIndex}`] = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_DECIMALS"));
         record[`targetKey_${segmentIndex}`] = String(getPathRowValue(cell, "TARGET_KEY") || "").trim();
+        record[`groupType_${segmentIndex}`] = String(getPathRowValue(cell, "GROUPTYPE") || "").trim();
       });
 
       return record;
@@ -5663,7 +6295,7 @@
     const normalizedTechnicalName = String(technicalName || "").trim() || "--";
     const normalizedDisplayName = String(displayName || "").trim();
     const normalizedCopyLabel = String(copyLabel || "对象技术名").trim() || "对象技术名";
-    const copyMarkup = normalizedTechnicalName && normalizedTechnicalName !== "--"
+    const technicalCopyMarkup = normalizedTechnicalName && normalizedTechnicalName !== "--"
       ? renderCopyIconButton(normalizedTechnicalName, normalizedCopyLabel, "mapping-copy-btn-inline mapping-copy-btn-header")
       : "";
     const separatorMarkup = normalizedDisplayName && normalizedDisplayName !== normalizedTechnicalName
@@ -5672,7 +6304,7 @@
     const nameMarkup = normalizedDisplayName && normalizedDisplayName !== normalizedTechnicalName
       ? `<span class="mapping-step-route-name-wrap"><span class="mapping-step-route-name">${esc(normalizedDisplayName)}</span>${renderCopyIconButton(normalizedDisplayName, `${normalizedCopyLabel}文本`, "mapping-copy-btn-inline mapping-copy-btn-header")}</span>`
       : "";
-    return `<span class="mapping-path-object-label">${renderContextCopyText(normalizedTechnicalName, "mapping-step-route-text", normalizedCopyLabel)}${separatorMarkup}${nameMarkup}</span>${copyMarkup}`;
+    return `<span class="mapping-path-object-label">${renderContextCopyText(normalizedTechnicalName, "mapping-step-route-text", normalizedCopyLabel)}${technicalCopyMarkup}${separatorMarkup}${nameMarkup}</span>`;
   }
 
   function buildAgGridStepHeaderMeta(segment, segmentIndex) {
@@ -5680,6 +6312,7 @@
     const stepLabel = `Step ${String(segment.INDEX || segmentIndex + 1)}`;
     const targetName = String(segment.TARGETNAME || "--").trim() || "--";
     const targetType = getPathSegmentValue(segment, "TARGETTYPE");
+    const targetSubtype = normalizePathSubtype(getPathSegmentValue(segment, "TARGETSUBTYPE"));
     const normalizedTargetType = normalizePathObjectType(targetType);
     const targetSystem = getPathSegmentValue(segment, "TARGETSYSTEM");
     const targetDisplayName = getPathSegmentValue(segment, "TARGET_DISPLAY_NAME");
@@ -5696,13 +6329,20 @@
       `<div class="mapping-step-header-stack-line mapping-step-header-target-line">${targetIconMarkup}${renderPathObjectLabel(targetName, targetDisplayName, "目标技术名")}</div>`
     ];
 
+    if (normalizedTargetType === "IOBJ" && targetSubtype) {
+      detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line mapping-step-header-subline"><span class="mapping-step-tran-text">${esc(`Subtype: ${targetSubtype}`)}</span>${renderCopyIconButton(targetSubtype, "Target Subtype", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`);
+    }
+
     if (normalizedTargetType === "RSDS" && targetSystem) {
       detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line"><span class="mapping-step-tran-text">${esc(`System: ${targetSystem}`)}</span>${renderCopyIconButton(targetSystem, "Target System", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`);
     } else {
-      detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line">${renderTranIdIcon()}<span class="mapping-step-tran-text">${esc(tranLabel)}</span>${renderCopyIconButton(tranIds.join(", "), "转换ID", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`);
+      detailLines.push(renderTranInfoBlock(
+        tranLabel,
+        tranIds.join(", "),
+        trNameLabel,
+        trNames.join(" | ")
+      ));
     }
-
-    detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line mapping-step-header-subline"><span class="mapping-tran-id-icon-wrap is-spacer" aria-hidden="true"></span><span class="mapping-step-tran-text">${esc(trNameLabel)}</span>${trNames.length ? renderCopyIconButton(trNames.join(" | "), "转换名称", "mapping-copy-btn-inline mapping-copy-btn-header") : ""}</div>`);
 
     detailLines.push(renderMappingDiagnosticFieldStatsCompact("target_field", targetDiag, {
       withKeyLabel: normalizedTargetType === "RSDS" || normalizedTargetType === "TRCS" || normalizedTargetType === "ADSO"
@@ -5723,6 +6363,7 @@
   function buildAgGridSourceHeaderMeta(segments) {
     const sourceName = getPathSummaryValue(activePathSearchResult, "SOURCE", getPathSegmentValue(segments?.[0], "SOURCE", "--")) || "--";
     const sourceType = getPathSegmentValue(segments?.[0], "SOURCETYPE");
+    const sourceSubtype = normalizePathSubtype(getPathSegmentValue(segments?.[0], "SOURCESUBTYPE"));
     const normalizedSourceType = normalizePathObjectType(sourceType);
     const sourceSystem = getPathSummaryValue(activePathSearchResult, "SOURCESYS", getPathSegmentValue(segments?.[0], "SOURCESYS", "--")) || "--";
     const sourceDisplayName = getPathSegmentValue(segments?.[0], "SOURCE_DISPLAY_NAME");
@@ -5736,6 +6377,10 @@
     const detailLines = [
       `<div class="mapping-step-header-stack-line mapping-step-header-target-line">${sourceIconMarkup}${renderPathObjectLabel(sourceName, sourceDisplayName, "Source 技术名")}</div>`
     ];
+
+    if (normalizedSourceType === "IOBJ" && sourceSubtype) {
+      detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line mapping-step-header-subline"><span class="mapping-step-tran-text">${esc(`Subtype: ${sourceSubtype}`)}</span>${renderCopyIconButton(sourceSubtype, "Source Subtype", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`);
+    }
 
     if (normalizedSourceType === "RSDS") {
       detailLines.push(`<div class="mapping-step-header-stack-line mapping-step-header-tran-line"><span class="mapping-step-tran-text">${esc(`System: ${sourceSystem}`)}</span>${renderCopyIconButton(sourceSystem, "Source System", "mapping-copy-btn-inline mapping-copy-btn-header")}</div>`);
@@ -6012,6 +6657,17 @@
         cellClass: "ag-cell-center",
         headerClass: "ag-cell-center"
       });
+      children.push({
+        headerName: "Group",
+        field: `groupType_${segmentIndex}`,
+        width: 72,
+        minWidth: 64,
+        maxWidth: 76,
+        resizable: true,
+        sortable: true,
+        cellClass: "ag-cell-center",
+        headerClass: "ag-cell-center"
+      });
 
       const stepMeta = buildAgGridStepHeaderMeta(segment, segmentIndex);
       return {
@@ -6136,6 +6792,34 @@
     toggleDataQueryResultPanelBtn.classList.toggle("is-active", isMaximized);
   }
 
+  function syncProgCodePanelButton() {
+    if (!toggleProgCodePanelBtn || !progCodeWorkspace) return;
+    const progCodeShell = progCodeWorkspace.querySelector(".prog-code-import-shell");
+    const isMaximized = Boolean(progCodeShell?.classList.contains("is-maximized"));
+    toggleProgCodePanelBtn.textContent = isMaximized ? "恢复窗口" : "放大视图";
+    toggleProgCodePanelBtn.setAttribute("title", isMaximized ? "恢复窗口" : "放大视图");
+    toggleProgCodePanelBtn.setAttribute("aria-pressed", isMaximized ? "true" : "false");
+    toggleProgCodePanelBtn.classList.toggle("is-active", isMaximized);
+  }
+
+  function syncAbapSqlOutputPanelButton() {
+    if (!toggleAbapSqlOutputPanelBtn || !abapSqlOutputCard) return;
+    const isMaximized = abapSqlOutputCard.classList.contains("is-maximized");
+    toggleAbapSqlOutputPanelBtn.textContent = isMaximized ? "恢复窗口" : "放大视图";
+    toggleAbapSqlOutputPanelBtn.setAttribute("title", isMaximized ? "恢复窗口" : "放大视图");
+    toggleAbapSqlOutputPanelBtn.setAttribute("aria-pressed", isMaximized ? "true" : "false");
+    toggleAbapSqlOutputPanelBtn.classList.toggle("is-active", isMaximized);
+  }
+
+  function syncAbapSqlInputPanelButton() {
+    if (!toggleAbapSqlInputPanelBtn || !abapSqlInputCard) return;
+    const isMaximized = abapSqlInputCard.classList.contains("is-maximized");
+    toggleAbapSqlInputPanelBtn.textContent = isMaximized ? "恢复窗口" : "放大视图";
+    toggleAbapSqlInputPanelBtn.setAttribute("title", isMaximized ? "恢复窗口" : "放大视图");
+    toggleAbapSqlInputPanelBtn.setAttribute("aria-pressed", isMaximized ? "true" : "false");
+    toggleAbapSqlInputPanelBtn.classList.toggle("is-active", isMaximized);
+  }
+
   function setMappingResultPanelMaximized(shouldMaximize) {
     if (!mappingResultPanel) return;
     const nextState = !!shouldMaximize;
@@ -6183,6 +6867,55 @@
     setDataQueryResultPanelMaximized(!dataQueryResultPanel.classList.contains("is-maximized"));
   }
 
+  function setProgCodePanelMaximized(shouldMaximize) {
+    const progCodeShell = progCodeWorkspace?.querySelector(".prog-code-import-shell");
+    if (!progCodeShell) return;
+    const nextState = !!shouldMaximize;
+    progCodeShell.classList.toggle("is-maximized", nextState);
+    document.body.classList.toggle("prog-code-panel-maximized", nextState);
+    syncProgCodePanelButton();
+  }
+
+  function toggleProgCodePanelMaximized() {
+    const progCodeShell = progCodeWorkspace?.querySelector(".prog-code-import-shell");
+    if (!progCodeShell) return;
+    setProgCodePanelMaximized(!progCodeShell.classList.contains("is-maximized"));
+  }
+
+  function setAbapSqlOutputPanelMaximized(shouldMaximize) {
+    if (!abapSqlOutputCard) return;
+    const nextState = !!shouldMaximize;
+    if (nextState && abapSqlInputCard?.classList.contains("is-maximized")) {
+      setAbapSqlInputPanelMaximized(false);
+    }
+    abapSqlOutputCard.classList.toggle("is-maximized", nextState);
+    document.body.classList.toggle("abap-sql-output-maximized", nextState);
+    syncAbapSqlOutputPanelButton();
+    resizeCodeEditors();
+  }
+
+  function toggleAbapSqlOutputPanelMaximized() {
+    if (!abapSqlOutputCard) return;
+    setAbapSqlOutputPanelMaximized(!abapSqlOutputCard.classList.contains("is-maximized"));
+  }
+
+  function setAbapSqlInputPanelMaximized(shouldMaximize) {
+    if (!abapSqlInputCard) return;
+    const nextState = !!shouldMaximize;
+    if (nextState && abapSqlOutputCard?.classList.contains("is-maximized")) {
+      setAbapSqlOutputPanelMaximized(false);
+    }
+    abapSqlInputCard.classList.toggle("is-maximized", nextState);
+    document.body.classList.toggle("abap-sql-input-maximized", nextState);
+    syncAbapSqlInputPanelButton();
+    resizeCodeEditors();
+  }
+
+  function toggleAbapSqlInputPanelMaximized() {
+    if (!abapSqlInputCard) return;
+    setAbapSqlInputPanelMaximized(!abapSqlInputCard.classList.contains("is-maximized"));
+  }
+
   function formatDiagnosticCount(value) {
     const count = Number(value);
     return Number.isFinite(count) ? formatCount(count) : "--";
@@ -6228,8 +6961,12 @@
       ? "mapping-diagnostic-result-badge has-difference"
       : "mapping-diagnostic-result-badge is-match";
     const diffText = diag.has_difference ? `有差异 ${formatDiagnosticCount(diag.difference_count)} 条` : "无差异";
-    const adsoTableLine = diag.adso_table_name
-      ? `<div class="mapping-step-meta-line mapping-step-meta-line-inline"><span>ADSO表: ${esc(diag.adso_table_name)}</span>${renderCopyIconButton(diag.adso_table_name, "ADSO表技术名", "mapping-copy-btn-inline mapping-copy-btn-header")}${withKeyLabel ? `<span>With Key: ${esc(withKeyLabel)}</span>` : ""}</div>`
+    const normalizedBwTableName = String(diag.adso_table_name || "").trim();
+    const bwTableCopyMarkup = normalizedBwTableName && normalizedBwTableName !== "--"
+      ? renderCopyIconButton(normalizedBwTableName, "BW表技术名", "mapping-copy-btn-inline mapping-copy-btn-header")
+      : "";
+    const adsoTableLine = normalizedBwTableName
+      ? `<div class="mapping-step-meta-line mapping-step-meta-line-inline"><span>BW表: ${esc(normalizedBwTableName)}</span>${bwTableCopyMarkup}${withKeyLabel ? `<span>With Key: ${esc(withKeyLabel)}</span>` : ""}</div>`
       : withKeyLabel
         ? `<div class="mapping-step-meta-line">With Key: ${esc(withKeyLabel)}</div>`
         : "";
@@ -6268,9 +7005,9 @@
       ? `有差异 ${diffCount} 条（缺失 ${formatDiagnosticCount(diag.missing_count)} / 额外 ${formatDiagnosticCount(diag.extra_count)}）`
       : "无差异";
     const adsoTableLine = diag.adso_table_name
-      ? `<div class="mapping-diagnostic-stat-line">ADSO取表: ${esc(diag.adso_table_name)}</div>`
+      ? `<div class="mapping-diagnostic-stat-line">BW取表: ${esc(diag.adso_table_name)}</div>`
       : diag.adso_table_suffix
-        ? `<div class="mapping-diagnostic-stat-line">ADSO取表: A表 ${esc(String(diag.adso_table_suffix || ""))}</div>`
+        ? `<div class="mapping-diagnostic-stat-line">BW取表: A表 ${esc(String(diag.adso_table_suffix || ""))}</div>`
         : "";
 
     return `
@@ -6468,30 +7205,238 @@
     });
   }
 
+  function legacyCopyTextToClipboard(text) {
+    const normalized = String(text || "");
+    if (!normalized) {
+      return false;
+    }
+
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const helper = document.createElement("textarea");
+    helper.value = normalized;
+    helper.setAttribute("readonly", "readonly");
+    helper.style.position = "fixed";
+    helper.style.top = "0";
+    helper.style.left = "0";
+    helper.style.width = "1px";
+    helper.style.height = "1px";
+    helper.style.padding = "0";
+    helper.style.border = "0";
+    helper.style.outline = "0";
+    helper.style.boxShadow = "none";
+    helper.style.background = "transparent";
+    helper.style.opacity = "0.01";
+    helper.style.pointerEvents = "none";
+    helper.style.zIndex = "-1";
+    document.body.appendChild(helper);
+
+    helper.focus({ preventScroll: true });
+    helper.select();
+    helper.setSelectionRange(0, helper.value.length);
+
+    let success = false;
+    try {
+      success = document.execCommand("copy");
+    } catch {
+      success = false;
+    }
+
+    document.body.removeChild(helper);
+    if (activeElement && typeof activeElement.focus === "function") {
+      activeElement.focus({ preventScroll: true });
+    }
+    return success;
+  }
+
+  function legacyCopyRichTextToClipboard(html, text) {
+    const normalizedHtml = String(html || "");
+    const normalizedText = String(text || "");
+    if (!normalizedHtml || !normalizedText) {
+      return false;
+    }
+
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const selection = window.getSelection ? window.getSelection() : null;
+    const previousRanges = [];
+    if (selection) {
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        previousRanges.push(selection.getRangeAt(index));
+      }
+    }
+
+    const helper = document.createElement("div");
+    helper.contentEditable = "true";
+    helper.setAttribute("aria-hidden", "true");
+    helper.style.position = "fixed";
+    helper.style.top = "0";
+    helper.style.left = "0";
+    helper.style.opacity = "0.01";
+    helper.style.pointerEvents = "none";
+    helper.style.userSelect = "text";
+    helper.style.webkitUserSelect = "text";
+    helper.style.zIndex = "-1";
+    helper.innerHTML = normalizedHtml;
+    document.body.appendChild(helper);
+
+    const range = document.createRange();
+    range.selectNodeContents(helper);
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    helper.focus({ preventScroll: true });
+
+    let copied = false;
+    const onCopy = (event) => {
+      try {
+        event.clipboardData?.setData("text/plain", normalizedText);
+        event.clipboardData?.setData("text/html", normalizedHtml);
+        event.preventDefault();
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    };
+
+    document.addEventListener("copy", onCopy, { capture: true, once: true });
+    try {
+      copied = document.execCommand("copy") || copied;
+    } catch {
+      copied = copied || false;
+    }
+
+    document.body.removeChild(helper);
+    if (selection) {
+      selection.removeAllRanges();
+      previousRanges.forEach((savedRange) => selection.addRange(savedRange));
+    }
+    if (activeElement && typeof activeElement.focus === "function") {
+      activeElement.focus({ preventScroll: true });
+    }
+    return copied;
+  }
+
   async function writeTextToClipboard(text) {
     const normalized = String(text || "");
     if (!normalized) {
       throw new Error("empty text");
     }
+
+    if (legacyCopyTextToClipboard(normalized)) {
+      return;
+    }
+
+    if (navigator?.clipboard?.write) {
+      try {
+        const html = `<pre style="margin:0;white-space:pre-wrap;font-family:Consolas, 'Cascadia Code', monospace;">${normalized
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")}</pre>`;
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": new Blob([normalized], { type: "text/plain" }),
+            "text/html": new Blob([html], { type: "text/html" })
+          })
+        ]);
+        return;
+      } catch {
+        // Continue to writeText fallback.
+      }
+    }
+
     if (navigator?.clipboard?.writeText) {
       await navigator.clipboard.writeText(normalized);
       return;
     }
 
-    const helper = document.createElement("textarea");
-    helper.value = normalized;
-    helper.setAttribute("readonly", "readonly");
-    helper.style.position = "fixed";
-    helper.style.opacity = "0";
-    helper.style.pointerEvents = "none";
-    document.body.appendChild(helper);
-    helper.focus();
-    helper.select();
-    const success = document.execCommand("copy");
-    document.body.removeChild(helper);
-    if (!success) {
-      throw new Error("copy failed");
+    throw new Error("copy failed");
+  }
+
+  function getAceTokenInlineStyle(tokenType) {
+    const normalizedType = String(tokenType || "text").toLowerCase();
+    if (!normalizedType || normalizedType === "text") {
+      return "";
     }
+    if (normalizedType.includes("comment")) {
+      return "color: rgba(132,145,164,0.92);";
+    }
+    if (normalizedType.includes("keyword") || normalizedType.includes("storage")) {
+      return "color: #5f95d6; font-weight: 600;";
+    }
+    if (normalizedType.includes("string")) {
+      return "color: #84c97a;";
+    }
+    if (normalizedType.includes("numeric") || normalizedType.includes("constant.language") || normalizedType.includes("variable.parameter")) {
+      return "color: #7cc4b8;";
+    }
+    if (normalizedType.includes("support.type") || normalizedType.includes("support.class") || normalizedType.includes("storage.type")) {
+      return "color: #d7b56d;";
+    }
+    if (normalizedType.includes("function")) {
+      return "color: #d9e7ff;";
+    }
+    if (normalizedType.includes("paren") || normalizedType.includes("punctuation") || normalizedType.includes("operator")) {
+      return "color: #aab8ca;";
+    }
+    if (normalizedType.includes("variable") || normalizedType.includes("identifier")) {
+      return "color: #eef4ff;";
+    }
+    return "color: #eef4ff;";
+  }
+
+  function buildAceEditorRichClipboardPayload(editor) {
+    const aceEditor = editor || abapSqlOutputEditor;
+    const plainText = aceEditor ? String(aceEditor.getValue() || "") : "";
+    if (!plainText.trim() || !aceEditor?.session) {
+      return { text: plainText, html: "" };
+    }
+
+    const lineCount = aceEditor.session.getLength();
+    const htmlLines = [];
+    for (let row = 0; row < lineCount; row += 1) {
+      const tokens = aceEditor.session.getTokens(row) || [];
+      const lineHtml = tokens.map((token) => {
+        const style = getAceTokenInlineStyle(token?.type);
+        const content = esc(String(token?.value || "")).replaceAll(" ", "&nbsp;").replaceAll("\t", "&nbsp;&nbsp;&nbsp;&nbsp;");
+        if (!style) {
+          return content;
+        }
+        return `<span style="${style}">${content}</span>`;
+      }).join("");
+      htmlLines.push(`<div>${lineHtml || "&nbsp;"}</div>`);
+    }
+
+    const html = `<div style="margin:0;padding:16px 18px;border-radius:16px;background:linear-gradient(180deg, rgba(18,28,47,0.96), rgba(10,17,28,0.98));color:#eef4ff;font-family:Consolas, 'Cascadia Code', 'SFMono-Regular', monospace;font-size:13px;line-height:1.72;white-space:pre-wrap;">${htmlLines.join("")}</div>`;
+    return { text: plainText, html };
+  }
+
+  async function writeRichTextToClipboard(html, text) {
+    const normalizedHtml = String(html || "");
+    const normalizedText = String(text || "");
+    if (!normalizedText) {
+      throw new Error("empty text");
+    }
+
+    if (normalizedHtml && legacyCopyRichTextToClipboard(normalizedHtml, normalizedText)) {
+      return "rich";
+    }
+
+    if (normalizedHtml && navigator?.clipboard?.write) {
+      try {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": new Blob([normalizedText], { type: "text/plain" }),
+            "text/html": new Blob([normalizedHtml], { type: "text/html" })
+          })
+        ]);
+        return "rich";
+      } catch {
+        // Continue to plain text fallback.
+      }
+    }
+
+    await writeTextToClipboard(normalizedText);
+    return "plain";
   }
 
   async function copyLastStepSourceKeyFields() {
@@ -6584,11 +7529,81 @@
     return cloneExcelPayload(cell.style || {}) || {};
   }
 
+  function getExcelColumnLetters(columnNumber) {
+    let current = Math.max(1, Number(columnNumber) || 1);
+    let letters = "";
+    while (current > 0) {
+      const remainder = (current - 1) % 26;
+      letters = String.fromCharCode(65 + remainder) + letters;
+      current = Math.floor((current - 1) / 26);
+    }
+    return letters;
+  }
+
+  function getExcelColumnNumber(columnLetters) {
+    const normalized = String(columnLetters || "").trim().toUpperCase();
+    if (!normalized) return 0;
+    let value = 0;
+    for (const char of normalized) {
+      const code = char.charCodeAt(0);
+      if (code < 65 || code > 90) return 0;
+      value = (value * 26) + (code - 64);
+    }
+    return value;
+  }
+
+  function shiftExcelFormulaReferences(formula, columnOffset = 0, rowOffset = 0, options = {}) {
+    const raw = String(formula || "").trim();
+    if (!raw) return raw;
+    const shiftAbsoluteColumns = Boolean(options?.shiftAbsoluteColumns);
+    return raw.replace(/(\$?)([A-Z]{1,3})(\$?)(\d+)/g, (match, colAbsolute, colLetters, rowAbsolute, rowNumberText) => {
+      const currentColumn = getExcelColumnNumber(colLetters);
+      const shouldShiftColumn = !colAbsolute || shiftAbsoluteColumns;
+      const nextColumn = shouldShiftColumn ? Math.max(1, currentColumn + (Number(columnOffset) || 0)) : currentColumn;
+      const currentRow = Number(rowNumberText || 0);
+      const nextRow = rowAbsolute ? currentRow : Math.max(1, currentRow + (Number(rowOffset) || 0));
+      return `${colAbsolute || ""}${getExcelColumnLetters(nextColumn)}${rowAbsolute || ""}${nextRow}`;
+    });
+  }
+
   function setExcelCellFill(cell, fill) {
     if (!cell) return;
     const nextStyle = cloneExcelCellStyle(cell);
     nextStyle.fill = cloneExcelPayload(fill);
     cell.style = nextStyle;
+  }
+
+  function setExcelFormulaCell(cell, formula, result = null) {
+    if (!cell) return;
+    const normalizedFormula = String(formula || "").trim().replace(/^\s*=\s*/, "");
+    if (!normalizedFormula) {
+      cell.value = null;
+      return;
+    }
+    const formulaType = Number(window?.ExcelJS?.ValueType?.Formula || 6);
+    cell.model = {
+      address: cell.address,
+      type: formulaType,
+      formula: normalizedFormula,
+      result,
+      style: cloneExcelCellStyle(cell)
+    };
+  }
+
+  function getExcelCellFormula(cell) {
+    if (!cell) return "";
+    const directFormula = String(cell.formula || "").trim();
+    if (directFormula) {
+      return directFormula.replace(/^\s*=\s*/, "");
+    }
+    const rawValue = cell.value;
+    if (rawValue && typeof rawValue === "object") {
+      const nestedFormula = String(rawValue.formula || rawValue.sharedFormula || "").trim();
+      if (nestedFormula) {
+        return nestedFormula.replace(/^\s*=\s*/, "");
+      }
+    }
+    return String(rawValue || "").trim().replace(/^\s*=\s*/, "");
   }
 
   function getAlignedRuleContentValue(cell) {
@@ -6600,7 +7615,7 @@
       .trim() || null;
   }
 
-  function getAlignedExportAdsoTableName(segment, role) {
+  function getAlignedExportBwTableName(segment, role) {
     const bucket = getPathDiagnosticsBucket(segment, role);
     return String(bucket?.adso_table_name || "").trim();
   }
@@ -6703,24 +7718,20 @@
 
     const stepSourceName = String(segment?.SOURCE || "").trim() || "--";
     const stepTargetName = String(segment?.TARGETNAME || "").trim() || "--";
-    const sourceAdsoTableName = String(getAlignedExportAdsoTableName(segment, "SOURCE") || "").trim();
-    const targetAdsoTableName = String(getAlignedExportAdsoTableName(segment, "TARGET") || "").trim();
+    const sourceBwTableName = String(getAlignedExportBwTableName(segment, "SOURCE") || "").trim();
+    const targetBwTableName = String(getAlignedExportBwTableName(segment, "TARGET") || "").trim();
     const sourceLabel = buildAlignedExportObjectLabel(
       stepSourceName,
       segment?.SOURCE_DISPLAY_NAME,
       {
-        technicalNameOverride: String(segment?.SOURCETYPE || "").trim().toUpperCase() === "ADSO" && sourceAdsoTableName
-          ? sourceAdsoTableName
-          : stepSourceName
+        technicalNameOverride: sourceBwTableName || stepSourceName
       }
     );
     const targetLabel = buildAlignedExportObjectLabel(
       stepTargetName,
       segment?.TARGET_DISPLAY_NAME,
       {
-        technicalNameOverride: String(segment?.TARGETTYPE || "").trim().toUpperCase() === "ADSO" && targetAdsoTableName
-          ? targetAdsoTableName
-          : stepTargetName
+        technicalNameOverride: targetBwTableName || stepTargetName
       }
     );
 
@@ -6729,11 +7740,11 @@
       transformation: tranText || "None",
       transformationText: tranNameText,
       sourcesys: stepSourceSystemValue,
-      sourcetype: String(segment?.SOURCETYPE || "").trim() || "--",
+      sourcetype: formatPathTypeLabel(segment?.SOURCETYPE, segment?.SOURCESUBTYPE) || "--",
       sourcetable: sourceLabel,
       sourcetableTechnical: sourceLabel.split(" | ")[0] || sourceLabel,
       sourcetableText: sourceLabel.includes(" | ") ? sourceLabel.split(" | ").slice(1).join(" | ") : "",
-      targettype: String(segment?.TARGETTYPE || "").trim() || "--",
+      targettype: formatPathTypeLabel(segment?.TARGETTYPE, segment?.TARGETSUBTYPE) || "--",
       targettable: targetLabel,
       targettableTechnical: targetLabel.split(" | ")[0] || targetLabel,
       targettableText: targetLabel.includes(" | ") ? targetLabel.split(" | ").slice(1).join(" | ") : "",
@@ -6755,6 +7766,22 @@
     if (upper === "K") return "KeyFigure";
     if (upper === "U") return "Unit";
     return raw;
+  }
+
+  function formatTsExportFieldName(fieldName, fieldType) {
+    const normalizedFieldName = String(fieldName || "").trim();
+    if (!normalizedFieldName) return null;
+    const normalizedType = String(normalizeAlignedExportTypeLabel(fieldType) || "").trim().toUpperCase();
+    if (normalizedType !== "INFOOBJECT") {
+      return normalizedFieldName;
+    }
+    if (/^\/BIC\//i.test(normalizedFieldName)) {
+      return normalizedFieldName;
+    }
+    if (normalizedFieldName.startsWith("0")) {
+      return normalizedFieldName;
+    }
+    return `/BIC/${normalizedFieldName}`;
   }
 
   function getAlignedExportGroupSignature(cell) {
@@ -7006,6 +8033,7 @@
       target_type: ["targettype"],
       target_field: ["targetfield"],
       target_key: ["key"],
+      group_type: ["grouptype", "group"],
       target_text: ["text"],
       target_datatype: ["datatype"],
       target_length: ["length"],
@@ -7063,6 +8091,7 @@
       const targetTypeCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_type, "Target Type", 0);
       const targetFieldCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_field, "Target Field", 0);
       const targetKeyCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_key, "Target KEY", 1);
+      const groupTypeCol = findHeaderColumn(headerMap, stepHeaderAliases.group_type, 0, 0);
       const targetTextCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_text, "Target Text", 1);
       const targetDataTypeCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_datatype, "Target Data Type", 1);
       const targetLengthCol = findRequiredHeaderColumn(headerMap, stepHeaderAliases.target_length, "Target Length", 1);
@@ -7178,6 +8207,9 @@
         worksheet.getCell(sourceRowIndex, targetTypeCol).value = normalizeAlignedExportTypeLabel(getPathRowValue(cell, "TARGET_FIELDTYPE"));
         worksheet.getCell(sourceRowIndex, targetFieldCol).value = String(getPathRowValue(cell, "TARGET_FIELD") || "").trim() || null;
         worksheet.getCell(sourceRowIndex, targetKeyCol).value = String(getPathRowValue(cell, "TARGET_KEY") || "").trim() || null;
+        if (groupTypeCol > 0) {
+          worksheet.getCell(sourceRowIndex, groupTypeCol).value = String(getPathRowValue(cell, "GROUPTYPE") || "").trim() || null;
+        }
         worksheet.getCell(sourceRowIndex, targetTextCol).value = String(getPathRowValue(cell, "TARGET_TEXT") || "").trim() || null;
         worksheet.getCell(sourceRowIndex, targetDataTypeCol).value = String(getPathRowValue(cell, "TARGET_DATATYPE") || "").trim() || null;
         worksheet.getCell(sourceRowIndex, targetLengthCol).value = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_LENGTH")) || null;
@@ -7226,6 +8258,27 @@
     throw new Error(`模板文件读取失败。${errors.join(" | ")}`);
   }
 
+  async function loadPathExportTsTemplateWorkbook() {
+    const errors = [];
+    for (const templateUrl of PATH_EXPORT_TS_TEMPLATE_URL_CANDIDATES) {
+      try {
+        const response = await fetch(templateUrl, { credentials: "same-origin", cache: "no-store" });
+        if (!response.ok) {
+          errors.push(`${templateUrl}: status ${response.status}`);
+          continue;
+        }
+        const templateBuffer = await response.arrayBuffer();
+        const workbook = new window.ExcelJS.Workbook();
+        await workbook.xlsx.load(templateBuffer);
+        return workbook;
+      } catch (error) {
+        const rawMsg = String(error?.message || error || "unknown error").trim();
+        errors.push(`${templateUrl}: ${rawMsg}`);
+      }
+    }
+    throw new Error(`TS 模板文件读取失败。${errors.join(" | ")}`);
+  }
+
   function createFallbackAlignedTemplateWorkbook() {
     const workbook = new window.ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(PATH_EXPORT_TEMPLATE_SHEET);
@@ -7266,7 +8319,8 @@
       "Text",
       "Data Type",
       "Length",
-      "Decimals"
+      "Decimals",
+      "Group"
     ];
     headers.forEach((label, index) => {
       worksheet.getCell(headerRow, index + 1).value = label;
@@ -7324,13 +8378,229 @@
       }
     }
 
-    const widths = [16, 30, 8, 26, 12, 8, 10, 14, 16, 8, 14, 28, 8, 24, 12, 8, 10];
+    const widths = [16, 30, 8, 26, 12, 8, 10, 14, 16, 8, 14, 28, 8, 24, 12, 8, 10, 10];
     widths.forEach((width, index) => {
       worksheet.getColumn(index + 1).width = width;
     });
 
     worksheet.views = [{ state: "frozen", ySplit: 13, xSplit: 1 }];
     return workbook;
+  }
+
+  function createFallbackTsTemplateWorkbook() {
+    const workbook = new window.ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet(PATH_EXPORT_TS_TEMPLATE_SHEET);
+    const labels = [
+      "",
+      "Transformation",
+      "Source Sys.",
+      "Source Type",
+      "Source Table",
+      "Target Type",
+      "Target Table",
+      "Start Routine",
+      "End Routine",
+      "Expert Routine",
+      "Global 1",
+      "Global 2"
+    ];
+    labels.forEach((label, index) => {
+      worksheet.getCell(index + 1, 1).value = label || null;
+    });
+    ["Position", "Field Name", "Data Type", "Length", "Decimals", "Key", "Description", "Logic", "Source Type", "Source Field", "Target TYP", "Rule", "Aggr.", "Group"].forEach((label, index) => {
+      worksheet.getCell(PATH_EXPORT_TS_HEADER_ROW, index + 1).value = label;
+    });
+    worksheet.getCell(PATH_EXPORT_TS_DATA_START_ROW, 8).value = '=IF(I14="InfoObject",$B$5&"-"&IF(LEFT(J14,1)="0",J14,"/BIC/"&J14),$B$5&"-"&J14)';
+    return workbook;
+  }
+
+  function ensureTsTemplateRowCapacity(worksheet, requiredRowCount) {
+    const nextRequiredRowCount = Math.max(PATH_EXPORT_TS_DATA_START_ROW, Number(requiredRowCount) || PATH_EXPORT_TS_DATA_START_ROW);
+    while (worksheet.rowCount < nextRequiredRowCount) {
+      const targetRowIndex = worksheet.rowCount + 1;
+      const styleSourceRowIndex = Math.max(PATH_EXPORT_TS_DATA_START_ROW, targetRowIndex - 1);
+      const targetRow = worksheet.getRow(targetRowIndex);
+      const sourceRow = worksheet.getRow(styleSourceRowIndex);
+      targetRow.height = sourceRow.height;
+      for (let columnIndex = 1; columnIndex <= worksheet.columnCount; columnIndex += 1) {
+        copyExcelJsCellStyle(worksheet.getCell(styleSourceRowIndex, columnIndex), worksheet.getCell(targetRowIndex, columnIndex));
+      }
+    }
+  }
+
+  function ensureTsTemplateBlockCapacity(worksheet, segmentCount) {
+    const requiredBlockCount = Math.max(1, Number(segmentCount) || 0);
+    for (let blockIndex = 1; blockIndex < requiredBlockCount; blockIndex += 1) {
+      const sourceStart = 1;
+      const targetStart = 1 + (blockIndex * PATH_EXPORT_TS_BLOCK_WIDTH);
+      const existingHeader = String(worksheet.getCell(PATH_EXPORT_TS_HEADER_ROW, targetStart).value || "").trim();
+      if (existingHeader) {
+        continue;
+      }
+      for (let offset = 0; offset < PATH_EXPORT_TS_BLOCK_WIDTH; offset += 1) {
+        copyExcelJsColumnStyle(worksheet.getColumn(sourceStart + offset), worksheet.getColumn(targetStart + offset));
+      }
+      for (let rowIndex = 1; rowIndex <= worksheet.rowCount; rowIndex += 1) {
+        for (let offset = 0; offset < PATH_EXPORT_TS_BLOCK_WIDTH; offset += 1) {
+          const sourceCell = worksheet.getCell(rowIndex, sourceStart + offset);
+          const targetCell = worksheet.getCell(rowIndex, targetStart + offset);
+          copyExcelJsCellStyle(sourceCell, targetCell);
+          if (rowIndex <= PATH_EXPORT_TS_HEADER_ROW) {
+            targetCell.value = cloneExcelPayload(sourceCell.value);
+          }
+        }
+      }
+    }
+  }
+
+  function populateTsTemplateSheet(worksheet, segments, alignedRows) {
+    const rows = Array.isArray(alignedRows) ? alignedRows : [];
+    const segmentList = Array.isArray(segments) ? segments : [];
+    ensureTsTemplateRowCapacity(worksheet, PATH_EXPORT_TS_DATA_START_ROW + Math.max(rows.length - 1, 0));
+    ensureTsTemplateBlockCapacity(worksheet, segmentList.length || 1);
+
+    const templateLogicFormula = getExcelCellFormula(worksheet.getCell(PATH_EXPORT_TS_DATA_START_ROW, 8));
+
+    segmentList.forEach((segment, segmentIndex) => {
+      const columnStart = 1 + (segmentIndex * PATH_EXPORT_TS_BLOCK_WIDTH);
+      const stepHeaderValues = buildExportStepHeaderValues(segment, segmentIndex, rows);
+      const blockColumn = (offset) => columnStart + offset;
+
+      worksheet.getCell(1, blockColumn(0)).value = stepHeaderValues.stepTitle || null;
+      worksheet.getCell(2, blockColumn(1)).value = stepHeaderValues.transformation || null;
+      worksheet.getCell(2, blockColumn(2)).value = stepHeaderValues.transformationText || null;
+      worksheet.getCell(3, blockColumn(1)).value = stepHeaderValues.sourcesys || null;
+      worksheet.getCell(4, blockColumn(1)).value = stepHeaderValues.sourcetype || null;
+      worksheet.getCell(5, blockColumn(1)).value = stepHeaderValues.sourcetableTechnical || null;
+      worksheet.getCell(5, blockColumn(2)).value = stepHeaderValues.sourcetableText || null;
+      worksheet.getCell(6, blockColumn(1)).value = stepHeaderValues.targettype || null;
+      worksheet.getCell(7, blockColumn(1)).value = stepHeaderValues.targettableTechnical || null;
+      worksheet.getCell(7, blockColumn(2)).value = stepHeaderValues.targettableText || null;
+      worksheet.getCell(8, blockColumn(1)).value = stepHeaderValues.startroutine || null;
+      worksheet.getCell(9, blockColumn(1)).value = stepHeaderValues.endroutine || null;
+      worksheet.getCell(10, blockColumn(1)).value = stepHeaderValues.expertroutine || null;
+      worksheet.getCell(11, blockColumn(1)).value = stepHeaderValues.global1 || null;
+      worksheet.getCell(12, blockColumn(1)).value = stepHeaderValues.global2 || null;
+
+      rows.forEach((row, rowIndex) => {
+        const cell = row?.[segmentIndex] || null;
+        const sheetRowIndex = PATH_EXPORT_TS_DATA_START_ROW + rowIndex;
+        const targetFieldType = getPathRowValue(cell, "TARGET_FIELDTYPE");
+        worksheet.getCell(sheetRowIndex, blockColumn(0)).value = rowIndex + 1;
+        worksheet.getCell(sheetRowIndex, blockColumn(1)).value = formatTsExportFieldName(getPathRowValue(cell, "TARGET_FIELD"), targetFieldType);
+        worksheet.getCell(sheetRowIndex, blockColumn(2)).value = String(getPathRowValue(cell, "TARGET_DATATYPE") || "").trim() || null;
+        worksheet.getCell(sheetRowIndex, blockColumn(3)).value = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_LENGTH")) || null;
+        worksheet.getCell(sheetRowIndex, blockColumn(4)).value = formatMappingFieldMetric(getPathRowValue(cell, "TARGET_DECIMALS")) || null;
+        worksheet.getCell(sheetRowIndex, blockColumn(5)).value = String(getPathRowValue(cell, "TARGET_KEY") || "").trim() || null;
+        worksheet.getCell(sheetRowIndex, blockColumn(6)).value = String(getPathRowValue(cell, "TARGET_TEXT") || "").trim() || null;
+        worksheet.getCell(sheetRowIndex, blockColumn(8)).value = normalizeAlignedExportTypeLabel(getPathRowValue(cell, "SOURCE_FIELDTYPE"));
+        worksheet.getCell(sheetRowIndex, blockColumn(9)).value = formatTsExportFieldName(getPathRowValue(cell, "SOURCE_FIELD"), getPathRowValue(cell, "SOURCE_FIELDTYPE"));
+        worksheet.getCell(sheetRowIndex, blockColumn(10)).value = normalizeAlignedExportTypeLabel(targetFieldType);
+        worksheet.getCell(sheetRowIndex, blockColumn(11)).value = String(getPathRowValue(cell, "RULE") || "").trim() || null;
+        worksheet.getCell(sheetRowIndex, blockColumn(12)).value = String(getPathRowValue(cell, "AGGR") || "").trim() || null;
+        worksheet.getCell(sheetRowIndex, blockColumn(13)).value = String(getPathRowValue(cell, "GROUPTYPE") || "").trim() || null;
+      });
+
+      if (templateLogicFormula && rows.length) {
+        const logicColumnIndex = blockColumn(7);
+        const shiftedTopFormula = shiftExcelFormulaReferences(
+          templateLogicFormula,
+          segmentIndex * PATH_EXPORT_TS_BLOCK_WIDTH,
+          0,
+          { shiftAbsoluteColumns: true }
+        );
+        rows.forEach((_, rowIndex) => {
+          setExcelFormulaCell(
+            worksheet.getCell(PATH_EXPORT_TS_DATA_START_ROW + rowIndex, logicColumnIndex),
+            shiftExcelFormulaReferences(
+              shiftedTopFormula,
+              0,
+              rowIndex,
+              { shiftAbsoluteColumns: false }
+            ),
+            null
+          );
+        });
+      }
+    });
+  }
+
+  async function buildStyledPathExportTsWorkbook(mappingResult, appliedPath, alignedRows) {
+    await ensureExcelJsLoaded();
+    let workbook;
+    try {
+      workbook = await loadPathExportTsTemplateWorkbook();
+    } catch {
+      workbook = createFallbackTsTemplateWorkbook();
+    }
+
+    const segments = getPathSegments(mappingResult);
+    const worksheet = workbook.getWorksheet(PATH_EXPORT_TS_TEMPLATE_SHEET) || workbook.worksheets[0];
+    if (!worksheet) {
+      throw new Error("TS 模板中未找到导出工作表。");
+    }
+
+    populateTsTemplateSheet(worksheet, segments, alignedRows);
+
+    [...workbook.worksheets].forEach((sheet) => {
+      if (sheet.id !== worksheet.id) {
+        workbook.removeWorksheet(sheet.id);
+      }
+    });
+
+    return workbook;
+  }
+
+  async function saveExcelWorkbook(workbook, fileName) {
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([
+      buffer
+    ], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+
+    const hasSavePicker = canUseSavePicker();
+    let shouldFallbackToAnchorDownload = !hasSavePicker;
+    if (hasSavePicker) {
+      try {
+        const fileHandle = await window.showSaveFilePicker({
+          suggestedName: fileName,
+          types: [
+            {
+              description: "Excel Workbook",
+              accept: {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
+              }
+            }
+          ]
+        });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        showToast(`已保存导出文件：${fileName}`);
+        return;
+      } catch (error) {
+        const errorName = String(error?.name || "").trim();
+        if (errorName === "AbortError") {
+          return;
+        }
+        if (errorName === "NotAllowedError") {
+          setSavePickerDisabled(true);
+          shouldFallbackToAnchorDownload = true;
+        } else {
+          throw new Error(`系统保存失败（${errorName || "UnknownError"}）：${String(error?.message || "当前环境不支持该保存流程")}`);
+        }
+      }
+    }
+
+    if (shouldFallbackToAnchorDownload) {
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    }
   }
 
   async function buildStyledPathExportWorkbook(mappingResult, appliedPath, alignedRows) {
@@ -7387,9 +8657,10 @@
       null,
       null,
       null,
+      null,
       null
     ]));
-    alignedSheetRows.push(segments.flatMap(() => ["Source Field", "Rule", "Aggr.", "Target Type", "Target Field", "KEY"]));
+    alignedSheetRows.push(segments.flatMap(() => ["Source Field", "Rule", "Aggr.", "Target Type", "Target Field", "KEY", "Group"]));
     alignedRows.forEach((row) => {
       alignedSheetRows.push(
         segments.flatMap((_, segmentIndex) => {
@@ -7400,13 +8671,14 @@
             toExcelTextCell(getPathRowValue(cell, "AGGR")),
             toExcelTextCell(normalizeAlignedExportTypeLabel(getPathRowValue(cell, "TARGET_FIELDTYPE"))),
             toExcelTextCell(getPathRowValue(cell, "TARGET_FIELD")),
-            toExcelTextCell(getPathRowValue(cell, "TARGET_KEY"))
+            toExcelTextCell(getPathRowValue(cell, "TARGET_KEY")),
+            toExcelTextCell(getPathRowValue(cell, "GROUPTYPE"))
           ];
         })
       );
     });
 
-    const detailSheetRows = [["Step", "Source", "Target", "TRANID", "Source Field", "Rule", "Aggr.", "Target Field", "KEY", "Rule Content Count", "Rule Content Kind", "Rule Content Language", "Rule Content Raw", "Rule Content Display"]];
+    const detailSheetRows = [["Step", "Source", "Target", "TRANID", "Source Field", "Rule", "Aggr.", "Target Field", "KEY", "Group", "Rule Content Count", "Rule Content Kind", "Rule Content Language", "Rule Content Raw", "Rule Content Display"]];
     segments.forEach((segment) => {
       const tranText = getPathSegmentTranIds(segment).join(", ");
       const rows = getPathRows(segment);
@@ -7416,6 +8688,7 @@
           toExcelTextCell(segment.SOURCE),
           toExcelTextCell(segment.TARGETNAME),
           toExcelTextCell(tranText),
+          null,
           null,
           null,
           null,
@@ -7441,6 +8714,7 @@
           toExcelTextCell(getPathRowValue(row, "AGGR")),
           toExcelTextCell(getPathRowValue(row, "TARGET_FIELD")),
           toExcelTextCell(getPathRowValue(row, "TARGET_KEY")),
+          toExcelTextCell(getPathRowValue(row, "GROUPTYPE")),
           logicEntries.length || null,
           toExcelTextCell(toLogicKindCell(logicEntries)),
           toExcelTextCell(toLogicLanguageCell(logicEntries)),
@@ -7509,56 +8783,32 @@
     const sourceName = getPathSummaryValue(summary, "SOURCE", "source").replace(/[^A-Za-z0-9_-]+/g, "_");
     const targetName = getPathSummaryValue(summary, "TARGETNAME", "target").replace(/[^A-Za-z0-9_-]+/g, "_");
     const fileName = `path_mapping_${sourceName}_to_${targetName}_path${appliedPath.index || 1}.xlsx`;
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([
-      buffer
-    ], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    await saveExcelWorkbook(workbook, fileName);
+  }
 
-    const hasSavePicker = canUseSavePicker();
-    let shouldFallbackToAnchorDownload = !hasSavePicker;
-    if (hasSavePicker) {
-      try {
-        const fileHandle = await window.showSaveFilePicker({
-          suggestedName: fileName,
-          types: [
-            {
-              description: "Excel Workbook",
-              accept: {
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]
-              }
-            }
-          ]
-        });
-        const writable = await fileHandle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-        showToast(`已保存导出文件：${fileName}`);
-        return;
-      } catch (error) {
-        const errorName = String(error?.name || "").trim();
-        if (errorName === "AbortError") {
-          return;
-        }
-        if (errorName === "NotAllowedError") {
-          // Disable save picker for this environment after a platform-level rejection.
-          setSavePickerDisabled(true);
-          shouldFallbackToAnchorDownload = true;
-        } else {
-          throw new Error(`系统保存失败（${errorName || "UnknownError"}）：${String(error?.message || "当前环境不支持该保存流程")}`);
-        }
-      }
+  async function exportAppliedPathMappingTs() {
+    const appliedPath = getAppliedPathCandidate();
+    if (!appliedPath || !activePathMappingResult) {
+      showToast("请先确定一条路径并等待字段映射加载完成。", "error");
+      return;
     }
 
-    if (shouldFallbackToAnchorDownload) {
-      const url = window.URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = fileName;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    await ensurePathMappingFeatures({ logic: false, text: true }, "正在补充 TS 导出所需数据...");
+
+    try {
+      await ensureExcelJsLoaded();
+    } catch {
+      showToast("Excel 导出依赖加载失败，请刷新后重试。", "error");
+      return;
     }
+
+    const alignedRows = getCurrentAlignedRowsForActions();
+    const workbook = await buildStyledPathExportTsWorkbook(activePathMappingResult, appliedPath, alignedRows);
+    const summary = activePathSearchResult || {};
+    const sourceName = getPathSummaryValue(summary, "SOURCE", "source").replace(/[^A-Za-z0-9_-]+/g, "_");
+    const targetName = getPathSummaryValue(summary, "TARGETNAME", "target").replace(/[^A-Za-z0-9_-]+/g, "_");
+    const fileName = `path_mapping_TS_${sourceName}_to_${targetName}_path${appliedPath.index || 1}.xlsx`;
+    await saveExcelWorkbook(workbook, fileName);
   }
 
   async function renderAppliedPathResult(path) {
@@ -7686,6 +8936,12 @@
     if (!appTabButtons.length || !appTabPanels.length) return;
     if (modeQuery) {
       modeQuery.addEventListener("click", () => switchWorkspaceTab("home"));
+    }
+    if (modeAbapSql) {
+      modeAbapSql.addEventListener("click", () => switchWorkspaceTab("abapsql"));
+    }
+    if (modeProgCode) {
+      modeProgCode.addEventListener("click", () => switchWorkspaceTab("progcode"));
     }
     if (modeDataQuery) {
       modeDataQuery.addEventListener("click", () => switchWorkspaceTab("dataquery"));
@@ -7899,6 +9155,24 @@
           return;
         }
 
+        if (button.id === "exportPathResultTsBtn") {
+          if (exportPathWorkbookLock) {
+            return;
+          }
+          exportPathWorkbookLock = true;
+          try {
+            await withAppLoading("正在生成并导出 TS Excel...", async () => {
+              await exportAppliedPathMappingTs();
+            });
+          } catch (error) {
+            const rawMsg = String(error?.message || error || "导出失败").trim();
+            showToast(`TS 导出失败：${rawMsg || "请检查模板配置。"}`, "error");
+          } finally {
+            exportPathWorkbookLock = false;
+          }
+          return;
+        }
+
         if (button.id === "copySourceKeyFieldsBtn") {
           void copyLastStepSourceKeyFields();
           return;
@@ -7922,6 +9196,27 @@
       syncDataQueryResultPanelButton();
     }
 
+    if (toggleProgCodePanelBtn) {
+      toggleProgCodePanelBtn.addEventListener("click", () => {
+        toggleProgCodePanelMaximized();
+      });
+      syncProgCodePanelButton();
+    }
+
+    if (toggleAbapSqlOutputPanelBtn) {
+      toggleAbapSqlOutputPanelBtn.addEventListener("click", () => {
+        toggleAbapSqlOutputPanelMaximized();
+      });
+      syncAbapSqlOutputPanelButton();
+    }
+
+    if (toggleAbapSqlInputPanelBtn) {
+      toggleAbapSqlInputPanelBtn.addEventListener("click", () => {
+        toggleAbapSqlInputPanelMaximized();
+      });
+      syncAbapSqlInputPanelButton();
+    }
+
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && toastIsBlocking) {
         event.preventDefault();
@@ -7936,6 +9231,19 @@
       }
       if (dataQueryResultPanel?.classList.contains("is-maximized")) {
         setDataQueryResultPanelMaximized(false);
+        return;
+      }
+      if (abapSqlInputCard?.classList.contains("is-maximized")) {
+        setAbapSqlInputPanelMaximized(false);
+        return;
+      }
+      if (abapSqlOutputCard?.classList.contains("is-maximized")) {
+        setAbapSqlOutputPanelMaximized(false);
+        return;
+      }
+      const progCodeShell = progCodeWorkspace?.querySelector(".prog-code-import-shell");
+      if (progCodeShell?.classList.contains("is-maximized")) {
+        setProgCodePanelMaximized(false);
       }
     });
   }
@@ -7963,10 +9271,71 @@
     return resp.json();
   }
 
+  async function upsertProgCodeEntry(payload) {
+    const resp = await apiFetch(`${importStatusApiBase}/import/prog-code/upsert`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      const msg = parseErrorText(text, `status ${resp.status}`);
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
+  async function searchProgCodeEntriesRequest(keyword, limit = 100) {
+    const params = new URLSearchParams({ q: String(keyword || ""), limit: String(limit) });
+    const resp = await apiFetch(`${importStatusApiBase}/import/prog-code/search?${params.toString()}`, {
+      method: "GET"
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      const msg = parseErrorText(text, `status ${resp.status}`);
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
+  async function getProgCodeEntryRequest(progId) {
+    const params = new URLSearchParams({ prog_id: String(progId || "") });
+    const resp = await apiFetch(`${importStatusApiBase}/import/prog-code/item?${params.toString()}`, {
+      method: "GET"
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      const msg = parseErrorText(text, `status ${resp.status}`);
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
+  async function generateAbapSqlRequest(payload) {
+    const resp = await apiFetch(`${importStatusApiBase}/abap-to-sql/generate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload),
+      timeoutMs: 120000
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      const msg = parseErrorText(text, `status ${resp.status}`);
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
+  const REBUILD_TIMEOUT_MS = 1200000;
+
   async function rebuildRstranMappingRuleTable() {
     const resp = await apiFetch(`${importStatusApiBase}/import/rebuild-rstran-mapping-rule`, {
       method: "POST",
-      timeoutMs: 300000
+      timeoutMs: REBUILD_TIMEOUT_MS
     });
     if (!resp.ok) {
       const text = await resp.text();
@@ -7979,7 +9348,20 @@
   async function rebuildRstranMappingRuleFullTable() {
     const resp = await apiFetch(`${importStatusApiBase}/import/rebuild-rstran-mapping-rule-full`, {
       method: "POST",
-      timeoutMs: 300000
+      timeoutMs: REBUILD_TIMEOUT_MS
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      const msg = parseErrorText(text, `status ${resp.status}`);
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
+  async function rebuildBwObjectFieldInventoryTable() {
+    const resp = await apiFetch(`${importStatusApiBase}/import/rebuild-bw-object-field-inventory`, {
+      method: "POST",
+      timeoutMs: REBUILD_TIMEOUT_MS
     });
     if (!resp.ok) {
       const text = await resp.text();
@@ -8022,6 +9404,24 @@
 
     if (!resp.ok) {
       throw new Error(`status ${resp.status}`);
+    }
+
+    return resp.json();
+  }
+
+  async function clearImportTableRequest(tableName) {
+    const form = new FormData();
+    form.append("table_name", String(tableName || "").trim().toLowerCase());
+
+    const resp = await apiFetch(`${importStatusApiBase}/import/clear-table`, {
+      method: "POST",
+      body: form
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      const msg = parseErrorText(text, `status ${resp.status}`);
+      throw new Error(msg);
     }
 
     return resp.json();
@@ -8152,6 +9552,535 @@
     applyImportStatusPayload(payload);
     importStatusLoadedOnce = loaded;
     return payload;
+  }
+
+  function switchImportSubtab(tabName) {
+    activeImportSubtab = "raw";
+    if (importRawTabBtn) {
+      importRawTabBtn.classList.add("is-active");
+      importRawTabBtn.setAttribute("aria-selected", "true");
+    }
+    if (importProgCodeTabBtn) {
+      importProgCodeTabBtn.classList.remove("is-active");
+      importProgCodeTabBtn.setAttribute("aria-selected", "false");
+    }
+    if (importRawPanel) {
+      importRawPanel.classList.remove("hidden");
+    }
+  }
+
+  function getProgCodeNormalizedText() {
+    return String(getProgCodeEditorText() || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  }
+
+  function getProgCodeLineCountValue() {
+    const normalizedText = getProgCodeNormalizedText();
+    if (!normalizedText) {
+      return 0;
+    }
+    return normalizedText.split("\n").length;
+  }
+
+  function updateProgCodeLineCount() {
+    if (progCodeLineCount) {
+      progCodeLineCount.textContent = String(getProgCodeLineCountValue());
+    }
+  }
+
+  function resetProgCodeImportForm() {
+    if (progCodeIdInput) {
+      progCodeIdInput.value = "";
+    }
+    if (progCodeTypeInput) {
+      progCodeTypeInput.value = "";
+    }
+    setProgCodeEditorText("");
+    updateProgCodeLineCount();
+  }
+
+  function applyProgCodeEntryToForm(entry) {
+    if (!entry || !progCodeIdInput || !progCodeTextInput) {
+      return;
+    }
+    progCodeIdInput.value = String(entry?.prog_id || "").trim();
+    if (progCodeTypeInput) {
+      progCodeTypeInput.value = String(entry?.prog_type || "").trim();
+    }
+    setProgCodeEditorText(String(entry?.prog_code || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+    updateProgCodeLineCount();
+  }
+
+  function closeProgCodeSearchModalPanel() {
+    hideBlockingModal(progCodeSearchModal);
+  }
+
+  function renderProgCodeSearchList(items, queryText) {
+    if (!progCodeSearchList) return;
+    activeProgCodeSearchResults = Array.isArray(items) ? items : [];
+
+    if (progCodeSearchModalTitle) {
+      progCodeSearchModalTitle.textContent = activeProgCodeSearchResults.length > 1
+        ? `选择程序（${formatCount(activeProgCodeSearchResults.length)}）`
+        : "选择程序";
+    }
+    if (progCodeSearchModalMeta) {
+      progCodeSearchModalMeta.textContent = `查询条件：${String(queryText || "").trim() || "--"}`;
+    }
+
+    if (!activeProgCodeSearchResults.length) {
+      progCodeSearchList.innerHTML = '<div class="prog-code-search-empty">没有可选程序。</div>';
+      return;
+    }
+
+    progCodeSearchList.innerHTML = activeProgCodeSearchResults.map((item, index) => {
+      const progId = esc(String(item?.prog_id || "").trim());
+      const progType = esc(String(item?.prog_type || "").trim() || "--");
+      const updatedAt = esc(String(item?.updated_at || "").trim() || "--");
+      return `
+        <button class="prog-code-search-item" type="button" data-prog-id="${progId}" role="option" aria-selected="${index === 0 ? "true" : "false"}">
+          <span class="prog-code-search-item-main">${progId}</span>
+          <span class="prog-code-search-item-side">Type: ${progType}</span>
+          <span class="prog-code-search-item-side">更新: ${updatedAt}</span>
+        </button>
+      `;
+    }).join("");
+  }
+
+  async function selectProgCodeCandidate(progId) {
+    const normalizedProgId = String(progId || "").trim();
+    if (!normalizedProgId) return;
+
+    try {
+      const entry = await withAppLoading(`正在读取 ${normalizedProgId}...`, async () => getProgCodeEntryRequest(normalizedProgId));
+      applyProgCodeEntryToForm(entry);
+      closeProgCodeSearchModalPanel();
+      showToast(`已载入 ${normalizedProgId}，代码行数 ${formatCount(Number(entry?.line_count || getProgCodeLineCountValue()))}。`, "success");
+      progCodeIdInput?.focus();
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`读取程序失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
+    }
+  }
+
+  async function queryProgCodeEntry() {
+    if (!progCodeIdInput) return;
+    const keyword = String(progCodeIdInput.value || "").trim();
+    if (!keyword) {
+      showToast("请输入 Program ID。支持 * 号通配符。", "error");
+      progCodeIdInput.focus();
+      return;
+    }
+
+    try {
+      const result = await withAppLoading("正在查询 PROG_CODE...", async () => searchProgCodeEntriesRequest(keyword, 100));
+      const items = Array.isArray(result?.items) ? result.items : [];
+      if (!items.length) {
+        showToast(`未找到匹配的程序。查询条件: ${keyword}`, "error");
+        return;
+      }
+      if (items.length === 1) {
+        await selectProgCodeCandidate(items[0]?.prog_id || keyword);
+        return;
+      }
+
+      renderProgCodeSearchList(items, keyword);
+      showBlockingModal(progCodeSearchModal);
+      progCodeSearchModalShell?.focus();
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`查询 PROG_CODE 失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error", {
+        title: "查询失败"
+      });
+    }
+  }
+
+  function getNormalizedAbapSqlCodeText() {
+    return String(getAbapSqlCodeEditorText() || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  }
+
+  function getAbapSqlOutputText() {
+    return String(getAbapSqlOutputEditorText() || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  }
+
+  function countTextLines(text) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (!normalized) {
+      return 0;
+    }
+    return normalized.split("\n").length;
+  }
+
+  function updateAbapSqlCodeLineCount() {
+    if (abapSqlCodeLineCount) {
+      abapSqlCodeLineCount.textContent = String(countTextLines(getNormalizedAbapSqlCodeText()));
+    }
+  }
+
+  function updateAbapSqlOutputLineCount() {
+    if (abapSqlOutputLineCount) {
+      abapSqlOutputLineCount.textContent = String(countTextLines(getAbapSqlOutputText()));
+    }
+  }
+
+  function parseAbapSqlLocationText(text) {
+    const normalized = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const lines = normalized.split("\n");
+    const summary = [];
+    const sections = [];
+    let currentSection = null;
+    let inSections = false;
+
+    lines.forEach((rawLine) => {
+      const line = String(rawLine || "").trim();
+      if (!line) {
+        if (currentSection) {
+          sections.push(currentSection);
+          currentSection = null;
+        }
+        inSections = true;
+        return;
+      }
+
+      if (line.endsWith(":")) {
+        if (currentSection) {
+          sections.push(currentSection);
+        }
+        currentSection = { title: line.slice(0, -1), items: [] };
+        inSections = true;
+        return;
+      }
+
+      if (currentSection && line.startsWith("-")) {
+        currentSection.items.push(line.replace(/^-\s*/, ""));
+        return;
+      }
+
+      if (!inSections && line.includes(":")) {
+        const separatorIndex = line.indexOf(":");
+        summary.push({
+          label: line.slice(0, separatorIndex).trim(),
+          value: line.slice(separatorIndex + 1).trim()
+        });
+        return;
+      }
+
+      if (currentSection) {
+        currentSection.items.push(line);
+      } else {
+        if (!sections.length || sections[sections.length - 1]?.title !== "说明") {
+          sections.push({ title: "说明", items: [line] });
+        } else {
+          sections[sections.length - 1].items.push(line);
+        }
+      }
+    });
+
+    if (currentSection) {
+      sections.push(currentSection);
+    }
+
+    return { summary, sections };
+  }
+
+  function getAbapSqlLocationTone(label, value) {
+    const normalizedLabel = String(label || "").trim();
+    const numericValue = Number.parseInt(String(value || "").trim(), 10);
+    if (normalizedLabel.includes("命中")) {
+      return numericValue > 0 ? "success" : "neutral";
+    }
+    if (normalizedLabel.includes("未命中") || normalizedLabel.includes("未匹配")) {
+      return numericValue > 0 ? "danger" : "success";
+    }
+    return "neutral";
+  }
+
+  function renderAbapSqlLocationResult(text) {
+    const parsed = parseAbapSqlLocationText(text);
+    if (!parsed) {
+      return `<div class="abap-sql-location-empty">${esc(String(text || "尚未生成。输入 ABAP 代码后点击“生成SQL”。"))}</div>`;
+    }
+
+    const summaryHtml = parsed.summary.length
+      ? `<div class="abap-sql-location-summary-grid">${parsed.summary.map((item) => {
+          const tone = getAbapSqlLocationTone(item.label, item.value);
+          return `<article class="abap-sql-location-metric is-${tone}"><div class="abap-sql-location-metric-label">${esc(item.label)}</div><div class="abap-sql-location-metric-value">${esc(item.value)}</div></article>`;
+        }).join("")}</div>`
+      : "";
+
+    const sectionsHtml = parsed.sections.length
+      ? `<div class="abap-sql-location-sections">${parsed.sections.map((section) => {
+          const sectionTone = /未命中|未匹配/.test(section.title)
+            ? "danger"
+            : (/命中|递归|定位|识别/.test(section.title) ? "success" : "neutral");
+          return `<section class="abap-sql-location-section is-${sectionTone}"><h4>${esc(section.title)}</h4><ul>${section.items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></section>`;
+        }).join("")}</div>`
+      : "";
+
+    return `${summaryHtml}${sectionsHtml}` || `<div class="abap-sql-location-empty">${esc(String(text || ""))}</div>`;
+  }
+
+  function setAbapSqlLocationResultText(text) {
+    if (abapSqlLocationResult) {
+      abapSqlLocationResult.innerHTML = renderAbapSqlLocationResult(String(text || "尚未生成。输入 ABAP 代码后点击“生成SQL”。"));
+    }
+  }
+
+  function resetAbapSqlInputForm() {
+    if (abapSqlTargetTableInput) {
+      abapSqlTargetTableInput.value = "";
+    }
+    setAbapSqlCodeEditorText("");
+    updateAbapSqlCodeLineCount();
+  }
+
+  function clearAbapSqlOutput() {
+    setAbapSqlOutputEditorText("");
+    updateAbapSqlOutputLineCount();
+    setAbapSqlLocationResultText("尚未生成。输入 ABAP 代码后点击“生成SQL”。");
+  }
+
+  function setAbapSqlBusy(isBusy) {
+    const disabled = Boolean(isBusy);
+    [resetAbapSqlInputBtn, generateAbapSqlBtn, copyAbapSqlOutputBtn, copyAbapSqlRichBtn, regenerateAbapSqlBtn, clearAbapSqlOutputBtn].forEach((button) => {
+      if (button) {
+        button.disabled = disabled;
+      }
+    });
+  }
+
+  async function submitAbapSqlGeneration() {
+    if (!abapSqlCodeInput) {
+      return;
+    }
+    if (abapSqlGenerateLock || importTaskLock || mappingRuleRebuildLock) {
+      return;
+    }
+
+    const outputTable = String(abapSqlTargetTableInput?.value || "").trim();
+    const abapCode = getNormalizedAbapSqlCodeText();
+
+    if (!abapCode.trim()) {
+      showToast("请输入 ABAP CODE。", "error");
+      focusAbapSqlCodeEditor();
+      return;
+    }
+    if (outputTable.length > 20) {
+      showToast("生成表最多 20 个字符。", "error");
+      abapSqlTargetTableInput?.focus();
+      return;
+    }
+
+    try {
+      abapSqlGenerateLock = true;
+      setAbapSqlBusy(true);
+      const result = await withAppLoading("正在解析 ABAP 并生成 SQL...", async () => generateAbapSqlRequest({
+        output_table: outputTable,
+        abap_code: abapCode
+      }));
+      setAbapSqlOutputEditorText(String(result?.sql_text || ""));
+      setAbapSqlLocationResultText(result?.location_text || "未返回定位结果。");
+      updateAbapSqlCodeLineCount();
+      updateAbapSqlOutputLineCount();
+      showToast(`SQL 已生成。命中 ${formatCount(result?.matched_count || 0)} 个 PROG_CODE，对象总数 ${formatCount(result?.detected_count || 0)}。`, "success", {
+        title: "生成完成"
+      });
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`生成 SQL 失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error", {
+        title: "生成失败"
+      });
+    } finally {
+      abapSqlGenerateLock = false;
+      setAbapSqlBusy(false);
+    }
+  }
+
+  async function copyAbapSqlOutput() {
+    const sqlText = getAbapSqlOutputText();
+    if (!sqlText.trim()) {
+      showToast("当前输出 SQL 为空，无法复制。", "error");
+      return;
+    }
+    try {
+      const excelFriendlyText = sqlText.replace(/\r?\n/g, "\r\n");
+      await writeTextToClipboard(excelFriendlyText);
+      showToast(`已复制 SQL，共 ${formatCount(countTextLines(sqlText))} 行。`);
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`复制 SQL 失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
+    }
+  }
+
+  async function copyAbapSqlOutputRich() {
+    const sqlText = getAbapSqlOutputText();
+    if (!sqlText.trim()) {
+      showToast("当前输出 SQL 为空，无法复制。", "error");
+      return;
+    }
+
+    try {
+      const payload = buildAceEditorRichClipboardPayload(abapSqlOutputEditor);
+      const mode = await writeRichTextToClipboard(payload.html, payload.text.replace(/\r?\n/g, "\r\n"));
+      if (mode === "rich") {
+        showToast(`已复制富文本 SQL，共 ${formatCount(countTextLines(sqlText))} 行。`);
+      } else {
+        showToast("当前环境不支持富文本剪贴板，已退回纯文本复制。", "success", {
+          title: "已复制"
+        });
+      }
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`复制富文本 SQL 失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error");
+    }
+  }
+
+  async function clearProgCodeImportTable() {
+    if (importTaskLock || mappingRuleRebuildLock) {
+      return;
+    }
+
+    const ok = window.confirm("确认清空 PROG_CODE 表中的全部数据吗？此操作不可撤销。");
+    if (!ok) {
+      return;
+    }
+
+    try {
+      importTaskLock = true;
+      if (saveProgCodeBtn) {
+        saveProgCodeBtn.disabled = true;
+      }
+      if (clearProgCodeTableBtn) {
+        clearProgCodeTableBtn.disabled = true;
+      }
+      const result = await withAppLoading("正在清空 PROG_CODE...", async () => clearImportTableRequest("prog_code"));
+      await refreshImportCardTimes();
+      resetProgCodeImportForm();
+      if (progCodeImportMeta) {
+        progCodeImportMeta.title = `最近清空：${result?.last_update || "-"}`;
+      }
+      showToast(`PROG_CODE 已清空，当前数据条目 ${formatCount(result?.db_count ?? 0)}。`, "success", {
+        title: "清空成功"
+      });
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`清空 PROG_CODE 失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error", {
+        title: "清空失败"
+      });
+    } finally {
+      importTaskLock = false;
+      if (saveProgCodeBtn) {
+        saveProgCodeBtn.disabled = false;
+      }
+      if (clearProgCodeTableBtn) {
+        clearProgCodeTableBtn.disabled = false;
+      }
+    }
+  }
+
+  async function submitProgCodeImport() {
+    if (!progCodeIdInput || !progCodeTextInput) {
+      return;
+    }
+    if (importTaskLock || mappingRuleRebuildLock) {
+      return;
+    }
+
+    const progId = String(progCodeIdInput.value || "").trim();
+    const progType = String(progCodeTypeInput?.value || "").trim();
+    const progCode = getProgCodeNormalizedText();
+
+    if (!progId) {
+      showToast("请输入 Program ID。", "error");
+      progCodeIdInput.focus();
+      return;
+    }
+    if (!progCode.trim()) {
+      showToast("请输入程序代码内容。", "error");
+      focusProgCodeEditor();
+      return;
+    }
+
+    try {
+      importTaskLock = true;
+      if (saveProgCodeBtn) {
+        saveProgCodeBtn.disabled = true;
+      }
+      const result = await withAppLoading("正在保存程序代码...", async () => upsertProgCodeEntry({
+        prog_id: progId,
+        prog_type: progType,
+        prog_code: progCode
+      }));
+      await refreshImportCardTimes();
+      updateProgCodeLineCount();
+      if (progCodeImportMeta) {
+        progCodeImportMeta.title = `最近保存：${result?.last_update || "-"}`;
+      }
+      showToast(`PROG_CODE 已保存。Program ID: ${progId}，代码行数: ${formatCount(result?.line_count ?? getProgCodeLineCountValue())}。`, "success", {
+        title: "保存成功"
+      });
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`保存 PROG_CODE 失败。${rawMsg ? ` 详情: ${rawMsg}` : ""}`, "error", {
+        title: "保存失败"
+      });
+    } finally {
+      importTaskLock = false;
+      if (saveProgCodeBtn) {
+        saveProgCodeBtn.disabled = false;
+      }
+    }
+  }
+
+  async function runBuildCardAction(buildKey) {
+    const config = buildCardConfigs[buildKey];
+    if (!config?.button) return;
+    if (mappingRuleRebuildLock || importTaskLock) return;
+
+    const precheckPassed = await checkRebuildDependencies(config.dependencyKey);
+    if (!precheckPassed) return;
+
+    const confirmed = window.confirm(config.confirmMessage || `确认执行${config.defaultTitle || "构建操作"}吗？`);
+    if (!confirmed) return;
+
+    try {
+      setWorkbenchCardSelected(config.button);
+      mappingRuleRebuildLock = true;
+      config.button.disabled = true;
+      if (config.titleNode) {
+        config.titleNode.textContent = config.loadingTitle || "处理中...";
+      }
+
+      const result = await withWorkbenchCardLoading(config.button, config.loadingLabel || "处理中...", async () => withAppLoading(config.loadingLabel || "处理中...", async () => config.execute()));
+      await refreshImportCardTimes();
+      showToast(
+        config.buildSuccessMessage(result),
+        "success",
+        {
+          title: "构建成功",
+          blocking: true,
+          actions: true,
+          requireClose: true
+        }
+      );
+    } catch (error) {
+      const rawMsg = String(error?.message || "").trim();
+      showToast(`${config.defaultTitle || "构建操作"}失败。${rawMsg ? ` 失败原因：${rawMsg}` : ""}`, "error", {
+        title: "构建失败",
+        blocking: true,
+        actions: true,
+        requireClose: true
+      });
+    } finally {
+      mappingRuleRebuildLock = false;
+      config.button.disabled = false;
+      if (config.titleNode) {
+        config.titleNode.textContent = config.defaultTitle || "构建";
+      }
+    }
   }
 
   async function ensureImportCardTimesLoaded(force = false) {
@@ -8594,122 +10523,35 @@
   function setupImportMapping() {
     if (!importCards.length || !importModal) return;
 
+    setImportProcessCollapsed(true);
+
+    if (toggleImportProcessBtn) {
+      toggleImportProcessBtn.addEventListener("click", () => {
+        setImportProcessCollapsed(!isImportProcessCollapsed);
+      });
+    }
+
     if (IMPORT_MAPPING_REBUILD_MODE) {
       importCards.forEach((card) => {
         card.addEventListener("click", () => {
           showToast(getFieldMappingRebuildMessage("import"), "success");
         });
       });
-      if (rebuildRstranMappingRuleBtn) {
-        rebuildRstranMappingRuleBtn.addEventListener("click", () => {
+      buildCards.forEach((card) => {
+        card.addEventListener("click", () => {
           showToast(getFieldMappingRebuildMessage("import"), "success");
         });
-      }
+      });
       return;
     }
 
-    if (rebuildRstranMappingRuleBtn) {
-      rebuildRstranMappingRuleBtn.addEventListener("click", async () => {
-        if (mappingRuleRebuildLock || importTaskLock) return;
-
-        const precheckPassed = await checkRebuildDependencies("mappingRule");
-        if (!precheckPassed) return;
-
-        const confirmed = window.confirm("确认重建字段规则表吗？这会先清空 rstran_mapping_rule 全部数据，再重新填充整张表。");
-        if (!confirmed) return;
-
-        try {
-          setWorkbenchCardSelected(rebuildRstranMappingRuleBtn);
-          mappingRuleRebuildLock = true;
-          rebuildRstranMappingRuleBtn.disabled = true;
-          if (rebuildRstranMappingRuleBtnTitle) {
-            rebuildRstranMappingRuleBtnTitle.textContent = "重建中...";
-          }
-
-          const result = await withWorkbenchCardLoading(rebuildRstranMappingRuleBtn, "正在重建字段规则表...", async () => withAppLoading("正在重建字段规则表...", async () => rebuildRstranMappingRuleTable()));
-          const insertedRows = Number(result?.inserted_rows ?? 0);
-          const tranCount = Number(result?.tran_count ?? 0);
-          const totalRows = Number(result?.db_count ?? 0);
-          showToast(
-            `字段规则表重建成功。已先清空旧数据，再重新写入：${formatCount(insertedRows)} 条；涉及转换：${formatCount(tranCount)} 个；当前表总条数：${formatCount(totalRows)}。后续若重新导入 RSTRANRULE 或 RSTRANFIELD，请再次执行重建。`,
-            "success",
-            {
-              title: "重建成功",
-              blocking: true,
-              actions: true,
-              requireClose: true
-            }
-          );
-        } catch (error) {
-          const rawMsg = String(error?.message || "").trim();
-          showToast(`字段规则表重建失败。${rawMsg ? ` 失败原因：${rawMsg}` : ""}`, "error", {
-            title: "重建失败",
-            blocking: true,
-            actions: true,
-            requireClose: true
-          });
-        } finally {
-          mappingRuleRebuildLock = false;
-          rebuildRstranMappingRuleBtn.disabled = false;
-          if (rebuildRstranMappingRuleBtnTitle) {
-            rebuildRstranMappingRuleBtnTitle.textContent = "重建字段规则表";
-          }
-        }
+    buildCards.forEach((card) => {
+      card.addEventListener("click", async () => {
+        const buildKey = String(card.dataset.buildKey || "").trim();
+        if (!buildKey) return;
+        await runBuildCardAction(buildKey);
       });
-    }
-
-    if (rebuildRstranMappingRuleFullBtn) {
-      rebuildRstranMappingRuleFullBtn.addEventListener("click", async () => {
-        if (mappingRuleRebuildLock || importTaskLock) return;
-
-        const precheckPassed = await checkRebuildDependencies("mappingRuleFull");
-        if (!precheckPassed) return;
-
-        const confirmed = window.confirm("确认重建完整字段表吗？这会先刷新 rstran_mapping_rule，再清空并重建 rstran_mapping_rule_full。当前版本会补齐已支持的元数据来源：RSDS 依赖 rsdssegfd；ADSO 依赖 dd03l，并固定按 TABNAME=/BIC/A+技术名+1位数字、FIELDNAME 按 /BIC/ 去前缀或补 0 解析。");
-        if (!confirmed) return;
-
-        try {
-          setWorkbenchCardSelected(rebuildRstranMappingRuleFullBtn);
-          mappingRuleRebuildLock = true;
-          rebuildRstranMappingRuleFullBtn.disabled = true;
-          if (rebuildRstranMappingRuleFullBtnTitle) {
-            rebuildRstranMappingRuleFullBtnTitle.textContent = "重建中...";
-          }
-
-          const result = await withWorkbenchCardLoading(rebuildRstranMappingRuleFullBtn, "正在重建完整字段表...", async () => withAppLoading("正在重建完整字段表...", async () => rebuildRstranMappingRuleFullTable()));
-          const insertedRows = Number(result?.inserted_rows ?? 0);
-          const tranCount = Number(result?.tran_count ?? 0);
-          const mappedRows = Number(result?.mapped_rows ?? 0);
-          const sourceCompletedRows = Number(result?.source_completed_rows ?? 0);
-          const targetCompletedRows = Number(result?.target_completed_rows ?? 0);
-          const totalRows = Number(result?.db_count ?? 0);
-          showToast(
-            `完整字段表重建成功。写入：${formatCount(insertedRows)} 条；涉及转换：${formatCount(tranCount)} 个；基础映射：${formatCount(mappedRows)} 条；补齐 source：${formatCount(sourceCompletedRows)} 条；补齐 target：${formatCount(targetCompletedRows)} 条；当前表总条数：${formatCount(totalRows)}。`,
-            "success",
-            {
-              title: "重建成功",
-              blocking: true,
-              actions: true,
-              requireClose: true
-            }
-          );
-        } catch (error) {
-          const rawMsg = String(error?.message || "").trim();
-          showToast(`完整字段表重建失败。${rawMsg ? ` 失败原因：${rawMsg}` : ""}`, "error", {
-            title: "重建失败",
-            blocking: true,
-            actions: true,
-            requireClose: true
-          });
-        } finally {
-          mappingRuleRebuildLock = false;
-          rebuildRstranMappingRuleFullBtn.disabled = false;
-          if (rebuildRstranMappingRuleFullBtnTitle) {
-            rebuildRstranMappingRuleFullBtnTitle.textContent = "重建完整字段表";
-          }
-        }
-      });
-    }
+    });
 
     importCards.forEach((card) => {
       card.addEventListener("click", async () => {
@@ -8730,6 +10572,93 @@
         }
       });
     });
+
+    switchImportSubtab(activeImportSubtab);
+    updateProgCodeLineCount();
+    updateAbapSqlCodeLineCount();
+    updateAbapSqlOutputLineCount();
+    setAbapSqlLocationResultText("尚未生成。输入 ABAP 代码后点击“生成SQL”。");
+    void initializeAbapSqlEditors();
+    void initializeProgCodeEditor();
+
+    if (importRawTabBtn) {
+      importRawTabBtn.addEventListener("click", () => switchWorkspaceTab("import"));
+    }
+    if (importProgCodeTabBtn) {
+      importProgCodeTabBtn.addEventListener("click", () => switchWorkspaceTab("progcode"));
+    }
+    if (resetProgCodeFormBtn) {
+      resetProgCodeFormBtn.addEventListener("click", () => resetProgCodeImportForm());
+    }
+    if (clearProgCodeTableBtn) {
+      clearProgCodeTableBtn.addEventListener("click", async () => {
+        await clearProgCodeImportTable();
+      });
+    }
+    if (saveProgCodeBtn) {
+      saveProgCodeBtn.addEventListener("click", async () => {
+        await submitProgCodeImport();
+      });
+    }
+    if (searchProgCodeBtn) {
+      searchProgCodeBtn.addEventListener("click", async () => {
+        await queryProgCodeEntry();
+      });
+    }
+    if (progCodeIdInput) {
+      progCodeIdInput.addEventListener("keydown", async (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        await queryProgCodeEntry();
+      });
+    }
+    if (closeProgCodeSearchModal) {
+      closeProgCodeSearchModal.addEventListener("click", closeProgCodeSearchModalPanel);
+    }
+    if (cancelProgCodeSearchBtn) {
+      cancelProgCodeSearchBtn.addEventListener("click", closeProgCodeSearchModalPanel);
+    }
+    if (progCodeSearchList) {
+      progCodeSearchList.addEventListener("click", async (event) => {
+        const trigger = event.target instanceof Element ? event.target.closest("[data-prog-id]") : null;
+        if (!trigger) return;
+        await selectProgCodeCandidate(trigger.getAttribute("data-prog-id") || "");
+      });
+    }
+    if (abapSqlCodeInput && !abapSqlCodeEditor) {
+      abapSqlCodeInput.addEventListener("input", () => updateAbapSqlCodeLineCount());
+    }
+    if (abapSqlOutputInput && !abapSqlOutputEditor) {
+      abapSqlOutputInput.addEventListener("input", () => updateAbapSqlOutputLineCount());
+    }
+    if (resetAbapSqlInputBtn) {
+      resetAbapSqlInputBtn.addEventListener("click", () => resetAbapSqlInputForm());
+    }
+    if (generateAbapSqlBtn) {
+      generateAbapSqlBtn.addEventListener("click", async () => {
+        await submitAbapSqlGeneration();
+      });
+    }
+    if (regenerateAbapSqlBtn) {
+      regenerateAbapSqlBtn.addEventListener("click", async () => {
+        await submitAbapSqlGeneration();
+      });
+    }
+    if (copyAbapSqlOutputBtn) {
+      copyAbapSqlOutputBtn.addEventListener("click", async () => {
+        await copyAbapSqlOutput();
+      });
+    }
+    if (copyAbapSqlRichBtn) {
+      copyAbapSqlRichBtn.addEventListener("click", async () => {
+        await copyAbapSqlOutputRich();
+      });
+    }
+    if (clearAbapSqlOutputBtn) {
+      clearAbapSqlOutputBtn.addEventListener("click", () => {
+        clearAbapSqlOutput();
+      });
+    }
 
     closeImportModal.addEventListener("click", () => hideBlockingModal(importModal));
 
@@ -8938,18 +10867,12 @@
         const ok = window.confirm(`确认删除导入表（${activeImportTable}）中的全部数据吗？此操作不可撤销。`);
         if (!ok) return;
 
-        const form = new FormData();
-        form.append("table_name", activeImportTable);
-
         try {
           importTaskLock = true;
           setImportBusyState(true, "正在删除全部数据...");
-          const resp = await apiFetch(`${importStatusApiBase}/import/clear-table`, {
-            method: "POST",
-            body: form
-          });
+          const result = await clearImportTableRequest(activeImportTable);
           await refreshImportCardTimes();
-          const count = Number(resp?.db_count ?? 0);
+          const count = Number(result?.db_count ?? 0);
           showToast(`删除完成：${activeImportTable} 当前数据条目 ${formatCount(count)}`);
           completeImportBusyState();
         } catch (err) {

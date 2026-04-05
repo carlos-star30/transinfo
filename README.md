@@ -23,6 +23,7 @@ This directory is an example app created from the reusable full-stack starter.
 - This example was initialized from the reusable starter template and can be used as a reference for future app initialization.
 - Common UI sizes are centralized at the top of `frontend-prototype/styles.css`.
 - If you need to change button height, input height, row height, or common spacing, update the `--control-*`, `--space-*`, and `--table-*` tokens first.
+- ABAP 转 SQL 当前已固化的规则说明见 `docs/abap-to-sql-rules.md`。
 
 ## Local Startup
 
@@ -41,4 +42,5 @@ This directory is an example app created from the reusable full-stack starter.
 - Current recommended production path: Netlify + Render + TiDB.
 - Canonical deployment guide: `DEPLOY_PLAN_B.md`.
 - Render environment checklist: `RENDER_ENV_PRODUCTION.md`.
-- Release note for current major version: `RELEASE_v2.0.0.md`.
+- Release note for current version: `RELEASE_v2.0.1.md`.
+

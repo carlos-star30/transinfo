@@ -155,6 +155,7 @@ Aligned Mapping 网格的主体行数据来自这里。
 当前用于：
 
 - 字段清单
+- `IOBJNM` 非空时判定为 InfoObject，空时判定为普通字段
 - KEYFLAG
 - DATATYPE
 - LENG
@@ -172,7 +173,11 @@ Aligned Mapping 网格的主体行数据来自这里。
 - LENG
 - DECIMALS
 
-说明：ADSO/ODSO/IOBJ 的字段元数据最终很多都从 dd03l 派生。
+说明：
+
+- ADSO 的字段顺序、KEYFLAG、DATATYPE、LENG、DECIMALS 仍来自 dd03l。
+- ADSO 的字段或 InfoObject 类型判断不再依赖 dd03l 字段名猜测，而是优先使用 `rsoadso.XML_UI` 中的 `element/@infoObjectName`。
+- ODSO/IOBJ 的字段元数据仍主要从 dd03l 派生。
 
 ### 5.6 rsoadso / rsoadsot
 
@@ -183,6 +188,7 @@ Aligned Mapping 网格的主体行数据来自这里。
 - 对象文本名
 - 激活表后缀
 - 导出时展示真实 A 表技术名
+- `XML_UI` 解析 ADSO 设计时字段定义，用于区分字段和 InfoObject
 
 ### 5.7 bw_object_name
 
@@ -192,20 +198,45 @@ Aligned Mapping 网格的主体行数据来自这里。
 
 ## 6. 字段元数据是如何补进 Mapping 的
 
-当前后端会在构建 mapping rows 后，按 source/target 所属对象类型选择不同库存：
+当前实现已经改为先全量物化对象字段库存，再物化 transformation mapping 明细；运行时优先直接读取物化结果，不再为 ADSO/TRCS/IOBJ 主路径重复做 XML/DD03L/RSKSFIELDNEW 推断。
+
+当前物化层：
+
+- `bw_object_field_inventory`
+	- 统一存放对象字段库存
+	- 覆盖 `ADSO`、`ODSO`、`TRCS`、`IOBJ`
+	- 持久化字段名、字段类型（`I` / `F`）、KEYFLAG、DATATYPE、LENG、DECIMALS、字段顺序、来源表
+- `rstran_mapping_rule_full`
+	- 持久化 transformation 的完整 source/target mapping 行
+	- 额外持久化 `source_fieldtype` 与 `target_fieldtype`
+	- 额外持久化 `source_match_field` / `target_match_field`，用于和对象字段库存稳定匹配
+	- 额外持久化 `source_iobj_name` / `target_iobj_name`，用于运行时文本补全而不再回查 XML/RSKS 重新推断
+
+物化时，后端按 source/target 所属对象类型选择不同库存来源：
 
 1. RSDS 走 rsdssegfd。
 2. TRCS 走 rsksfieldnew。
-3. ADSO/ODSO/IOBJ 走 dd03l 派生库存。
+3. ADSO 走 `rsoadso.XML_UI + dd03l`。
+4. ODSO/IOBJ 走 dd03l 派生库存。
+
+运行时读取规则：
+
+- mapping 主列表优先读取 `rstran_mapping_rule_full`
+- 对象字段库存优先读取 `bw_object_field_inventory`
+- 这两张物化表现在是运行时硬前置条件；缺表或空表会直接失败，并要求先执行重建接口
+- 因此这三类固定规则对象的 `TYP`、匹配字段名、IOBJ 归属都不再依赖运行时回退推断
+- 运行时不再回退到 `rstranfield`、`rsoadso.XML_UI`、`rsksfieldnew` 去重新判定字段类型
 
 统一补出的字段有：
 
 - SOURCE_DATATYPE
 - SOURCE_LENGTH
 - SOURCE_DECIMALS
+- SOURCE_FIELDTYPE
 - TARGET_DATATYPE
 - TARGET_LENGTH
 - TARGET_DECIMALS
+- TARGET_FIELDTYPE
 
 前端页面与导出模板都直接消费这些字段。
 

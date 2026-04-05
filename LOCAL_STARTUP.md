@@ -20,6 +20,17 @@
 - 后端启动脚本: `scripts/run_import_status_api.sh`
 - 后端入口模块: `backend.import_status_api:app`
 
+Windows PowerShell 本地脚本约定:
+
+- `scripts/stop_local_services.ps1`: 统一停止当前项目的本地前后端实例
+- `scripts/start_local_sqlite_backend.ps1`: 启动 SQLite 后端；默认先清理旧后端实例，且默认不启用 `--reload`
+- `scripts/start_local_frontend.ps1`: 启动本地前端代理；默认先清理旧前端实例，并自动读取后端实际端口状态
+
+说明:
+
+- 若 `8000` 被异常旧监听占用，后端脚本会自动回退到 `8002`、`8001` 或 `8010`
+- 前端脚本会自动读取 `scripts/.local-service-state.json`，跟随后端实际端口，避免再把 `/api` 误转发到旧实例
+
 补充文档:
 
 - Windows + SQLite 本地启动: `SQLITE_LOCAL_STARTUP.md`
@@ -176,9 +187,8 @@ python scripts/migrate_mysql_to_sqlite.py --source-host localhost --source-port 
 Windows PowerShell 示例:
 
 ```powershell
-$env:DB_DRIVER="sqlite"
-$env:SQLITE_DB_PATH="backend/data/trans_fields_mapping.db"
-C:/Users/JINYOZH/AppData/Local/Python/pythoncore-3.14-64/python.exe -m uvicorn backend.import_status_api:app --host 0.0.0.0 --port 8000 --reload
+powershell -ExecutionPolicy Bypass -File scripts/start_local_sqlite_backend.ps1
+powershell -ExecutionPolicy Bypass -File scripts/start_local_frontend.ps1
 ```
 
 ## 停止服务

@@ -1,7 +1,7 @@
-// Deployment runtime config.
-// Set this to your backend host, e.g. "http://1.2.3.4:8000" or "https://api.example.com".
-// Leave empty to use URL query/localStorage/default host resolution in app.js.
-window.__DATAFLOW_API_BASE__ = "https://transinfo.onrender.com";
+// Runtime config.
+// Leave empty for local development so app.js resolves the API host from the current page.
+// Set this only for explicit deployed environments.
+window.__DATAFLOW_API_BASE__ = "";
 window.__DATAFLOW_APP_TITLE__ = "转换映射查询";
-window.__DATAFLOW_APP_VERSION__ = "2.0.0";
+window.__DATAFLOW_APP_VERSION__ = "2.0.1";
 

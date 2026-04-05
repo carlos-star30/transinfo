@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>转换映射查询</title>
-  <link rel="stylesheet" href="./styles.css?v=20260402-v2.0.0" />
+  <link rel="stylesheet" href="./styles.css?v=20260404-abap-layout-fix" />
   <link rel="stylesheet" href="./vendor/ag-grid/ag-grid.css?v=32.3.3" />
   <link rel="stylesheet" href="./vendor/ag-grid/ag-theme-quartz.css?v=32.3.3" />
   <link rel="stylesheet" href="./vendor/highlightjs/github-dark.min.css?v=11.11.1" />
@@ -52,11 +52,13 @@
           </svg>
         </span>
         <span id="appTitleText">转换映射查询</span>
-        <span id="appVersionBadge" class="app-version-badge">v2.0.0</span>
+        <span id="appVersionBadge" class="app-version-badge">v2.0.1</span>
       </h1>
       <div class="topbar-actions">
         <div class="mode-switch" role="tablist" aria-label="Main mode switch">
           <button id="modeQuery" class="mode-btn active" type="button" role="tab" aria-selected="true">主页</button>
+          <button id="modeAbapSql" class="mode-btn" type="button" role="tab" aria-selected="false">ABAP转SQL</button>
+          <button id="modeProgCode" class="mode-btn" type="button" role="tab" aria-selected="false">程序代码导入</button>
           <button id="modeDataQuery" class="mode-btn" type="button" role="tab" aria-selected="false">数据库表动态查询</button>
           <button id="modeUpload" class="mode-btn" type="button" role="tab" aria-selected="false">数据导入</button>
         </div>
@@ -139,6 +141,7 @@
             <div class="mapping-toolbar-actions">
               <button id="toggleMappingResultPanelBtn" class="glass-btn tiny" type="button" aria-pressed="false" title="放大视图">放大视图</button>
               <button id="exportPathResultBtn" class="glass-btn strong tiny" type="button">Export to Excel</button>
+              <button id="exportPathResultTsBtn" class="glass-btn strong tiny" type="button">Export(TS)</button>
               <button id="copySourceKeyFieldsBtn" class="glass-btn tiny" type="button">Copy source key fields</button>
             </div>
           </div>
@@ -158,6 +161,81 @@
         </section>
       </section>
 
+      <section id="abapSqlWorkspace" class="workspace-panel hidden">
+        <section class="abap-sql-workspace-section">
+          <div class="abap-sql-shell glass-panel">
+            <div class="abap-sql-head">
+              <div>
+                <h2 class="import-function-title">ABAP转SQL</h2>
+                <p class="import-function-note">输入目标表和 ABAP 代码，系统会递归查询 PROG_CODE 并生成可继续编辑的伪 SQL。</p>
+              </div>
+              <div class="abap-sql-status" aria-live="polite">
+                <span class="abap-sql-status-item">模式: <strong>递归定位</strong></span>
+                <span class="abap-sql-status-item">代码行数: <strong id="abapSqlCodeLineCount">0</strong></span>
+                <span class="abap-sql-status-item">SQL 行数: <strong id="abapSqlOutputLineCount">0</strong></span>
+              </div>
+            </div>
+
+            <div class="abap-sql-layout">
+              <section id="abapSqlInputCard" class="abap-sql-card soft-panel">
+                <div class="abap-sql-card-head">
+                  <div>
+                    <h3>输入区</h3>
+                    <p>先输入生成表，再粘贴 ABAP CODE。</p>
+                  </div>
+                </div>
+                <div class="abap-sql-form-grid">
+                  <div class="abap-sql-target-row">
+                    <label class="prog-code-form-field abap-sql-target-field">
+                      <span>生成表</span>
+                      <input id="abapSqlTargetTableInput" class="glass-input path-compact-input" type="text" maxlength="20" placeholder="最多 20 字符" autocomplete="off" />
+                    </label>
+                  </div>
+                  <label class="prog-code-form-field prog-code-form-field-wide">
+                    <span>ABAP CODE</span>
+                    <textarea id="abapSqlCodeInput" class="glass-input prog-code-textarea abap-sql-input-textarea" placeholder="粘贴需要分析的 ABAP 代码。" spellcheck="false" autocorrect="off" autocapitalize="off" data-gramm="false"></textarea>
+                  </label>
+                </div>
+                <div class="abap-sql-card-actions abap-sql-input-actions">
+                  <button id="resetAbapSqlInputBtn" class="glass-btn strong action-btn path-compact-button" type="button">清除</button>
+                  <button id="generateAbapSqlBtn" class="glass-btn strong action-btn path-compact-button" type="button">生成SQL</button>
+                  <button id="toggleAbapSqlInputPanelBtn" class="glass-btn strong action-btn path-compact-button" type="button" aria-pressed="false">放大视图</button>
+                </div>
+              </section>
+
+              <div class="abap-sql-result-grid">
+                <section class="abap-sql-card soft-panel abap-sql-location-card">
+                  <div class="abap-sql-card-head abap-sql-card-head-stack">
+                    <div>
+                      <h3>定位结果</h3>
+                      <p>显示识别出的对象、PROG_CODE 命中情况和递归展开结果。</p>
+                    </div>
+                  </div>
+                  <div id="abapSqlLocationResult" class="abap-sql-location-result" aria-live="polite">尚未生成。输入 ABAP 代码后点击“生成SQL”。</div>
+                </section>
+
+                <section id="abapSqlOutputCard" class="abap-sql-card soft-panel abap-sql-output-card">
+                  <div class="abap-sql-card-head abap-sql-card-head-stack abap-sql-output-head">
+                    <div>
+                      <h3>输出SQL</h3>
+                      <p>这里的 SQL 可继续手工编辑。</p>
+                    </div>
+                  </div>
+                  <textarea id="abapSqlOutputInput" class="glass-input prog-code-textarea abap-sql-output-textarea" placeholder="生成后的 SQL 会显示在这里。" spellcheck="false" autocorrect="off" autocapitalize="off" data-gramm="false"></textarea>
+                  <div class="abap-sql-card-actions abap-sql-output-actions">
+                    <button id="copyAbapSqlOutputBtn" class="glass-btn strong action-btn path-compact-button" type="button">复制纯文本</button>
+                    <button id="copyAbapSqlRichBtn" class="glass-btn strong action-btn path-compact-button" type="button">复制富文本</button>
+                    <button id="regenerateAbapSqlBtn" class="glass-btn strong action-btn path-compact-button" type="button">重新生成</button>
+                    <button id="clearAbapSqlOutputBtn" class="glass-btn strong action-btn path-compact-button" type="button">清除</button>
+                    <button id="toggleAbapSqlOutputPanelBtn" class="glass-btn strong action-btn path-compact-button" type="button" aria-pressed="false">放大视图</button>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
       <section id="dataQueryWorkspace" class="workspace-panel hidden">
         <section id="dataQueryBuilderPanel" class="database-query-builder-panel glass-panel">
           <div class="panel-section-head panel-section-head-inline">
@@ -166,7 +244,7 @@
               <p>第一阶段：支持单表查询，并可关联另外一张表；先预览 10 条，确认条件后再取更多数据。</p>
             </div>
             <div class="panel-section-actions database-query-top-actions">
-              <button id="dataQueryRunBtn" class="glass-btn strong tiny" type="button">执行查询</button>
+              <button id="dataQueryRunBtn" class="glass-btn strong tiny path-compact-button" type="button">执行查询</button>
               <button id="toggleDataQueryConfigBtn" class="panel-collapse-btn panel-collapse-icon-btn" type="button" aria-expanded="true" title="收起查询面板" aria-label="收起查询面板">
                 <span class="panel-collapse-icon" aria-hidden="true"></span>
               </button>
@@ -212,8 +290,8 @@
                   <div class="database-query-join-condition-head">
                     <span>关联字段</span>
                     <div class="database-query-join-condition-actions">
-                      <button id="dataQueryAddJoinConditionBtn" class="glass-btn tiny" type="button">新增关联字段</button>
-                      <button id="dataQueryClearJoinConditionsBtn" class="glass-btn tiny" type="button">清空关联字段</button>
+                      <button id="dataQueryAddJoinConditionBtn" class="glass-btn tiny path-compact-button" type="button">新增关联字段</button>
+                      <button id="dataQueryClearJoinConditionsBtn" class="glass-btn tiny path-compact-button" type="button">清空关联字段</button>
                     </div>
                   </div>
                   <div id="dataQueryJoinConditionsList" class="database-query-join-conditions-list"></div>
@@ -231,8 +309,8 @@
                   <span class="database-query-card-note">支持多单值、区间，以及从剪贴板粘贴批量值。</span>
                 </div>
                 <div class="database-query-filter-actions">
-                  <button id="dataQueryAddFilterBtn" class="glass-btn tiny" type="button">新增筛选</button>
-                  <button id="dataQueryClearFiltersBtn" class="glass-btn tiny" type="button">清空筛选</button>
+                  <button id="dataQueryAddFilterBtn" class="glass-btn tiny path-compact-button" type="button">新增筛选</button>
+                  <button id="dataQueryClearFiltersBtn" class="glass-btn tiny path-compact-button" type="button">清空筛选</button>
                 </div>
               </div>
               <div id="dataQueryFiltersList" class="database-query-filters-list"></div>
@@ -248,17 +326,17 @@
               <p id="dataQueryResultSummary">请选择主表；系统会先抽取 10 条预览数据。</p>
             </div>
             <div class="panel-section-actions database-query-result-actions">
-              <button id="exportDataQueryResultBtn" class="glass-btn strong tiny hidden" type="button">Export to Excel</button>
+              <button id="exportDataQueryResultBtn" class="glass-btn strong tiny path-compact-button hidden" type="button">Export to Excel</button>
             </div>
           </div>
           <div id="dataQuerySelectFieldsPanel" class="database-query-result-fields-panel soft-panel">
             <div class="database-query-select-fields-head">
               <span>查询字段</span>
               <div class="database-query-select-fields-actions">
-                <button id="toggleDataQueryResultPanelBtn" class="glass-btn tiny" type="button" aria-pressed="false" title="放大视图">放大视图</button>
-                <button id="dataQuerySelectAllFieldsBtn" class="glass-btn tiny" type="button">全选</button>
-                <button id="dataQueryClearSelectedFieldsBtn" class="glass-btn tiny" type="button">清除</button>
-                <button id="dataQueryApplySelectFieldsBtn" class="glass-btn tiny strong" type="button">确定</button>
+                <button id="toggleDataQueryResultPanelBtn" class="glass-btn tiny path-compact-button" type="button" aria-pressed="false" title="放大视图">放大视图</button>
+                <button id="dataQuerySelectAllFieldsBtn" class="glass-btn tiny path-compact-button" type="button">全选</button>
+                <button id="dataQueryClearSelectedFieldsBtn" class="glass-btn tiny path-compact-button" type="button">清除</button>
+                <button id="dataQueryApplySelectFieldsBtn" class="glass-btn tiny strong path-compact-button" type="button">确定</button>
                 <button id="dataQueryToggleSelectFieldsBtn" class="panel-collapse-btn panel-collapse-icon-btn database-query-select-fields-collapse-btn" type="button" aria-expanded="true" title="收起查询字段" aria-label="收起查询字段">
                   <span class="panel-collapse-icon" aria-hidden="true"></span>
                 </button>
@@ -274,12 +352,55 @@
         </section>
       </section>
 
+      <section id="progCodeWorkspace" class="workspace-panel hidden">
+        <section class="prog-code-workspace-section">
+          <div class="prog-code-import-shell glass-panel">
+            <div class="prog-code-import-head">
+              <div>
+                <h2 class="import-function-title">程序代码导入</h2>
+                <p class="import-function-note">直接写入 PROG_CODE 表，按 PROG_ID 覆盖更新。代码内容保留原始换行，不转换为 ## 分隔。</p>
+              </div>
+              <div class="prog-code-import-status" aria-live="polite">
+                <span class="prog-code-import-status-item">Table: <strong>PROG_CODE</strong></span>
+                <span class="prog-code-import-status-item">更新时间：<strong id="progCodeImportTime">--</strong></span>
+                <span class="prog-code-import-status-item">数据条目：<strong id="progCodeImportCount">0</strong></span>
+              </div>
+            </div>
+
+            <div class="prog-code-import-form-grid">
+              <label class="prog-code-form-field">
+                <span>PROG_ID</span>
+                <input id="progCodeIdInput" class="glass-input path-compact-input" type="text" maxlength="40" placeholder="Program ID，最多 40 字符" autocomplete="off" />
+              </label>
+              <label class="prog-code-form-field">
+                <span>PROG_TYPE</span>
+                <input id="progCodeTypeInput" class="glass-input path-compact-input" type="text" maxlength="20" placeholder="Program Type，最多 20 字符" autocomplete="off" />
+              </label>
+              <div class="prog-code-form-field prog-code-form-field-wide prog-code-editor-field">
+                <div class="prog-code-editor-head">
+                  <span>PROG_CODE</span>
+                  <div class="prog-code-import-actions prog-code-import-actions-inline">
+                    <button id="resetProgCodeFormBtn" class="glass-btn strong action-btn path-compact-button" type="button">清空表单</button>
+                    <button id="clearProgCodeTableBtn" class="glass-btn strong action-btn path-compact-button" type="button">清空 PROG_CODE</button>
+                    <button id="saveProgCodeBtn" class="glass-btn strong action-btn path-compact-button" type="button">保存到 PROG_CODE</button>
+                    <button id="searchProgCodeBtn" class="glass-btn strong action-btn path-compact-button" type="button">查询</button>
+                    <button id="toggleProgCodePanelBtn" class="glass-btn strong action-btn path-compact-button" type="button" aria-pressed="false" title="放大视图">放大视图</button>
+                  </div>
+                </div>
+                <textarea id="progCodeTextInput" class="glass-input prog-code-textarea" placeholder="直接粘贴程序代码。支持长文本和滚动，保存时保留原始换行。" spellcheck="false" autocorrect="off" autocapitalize="off" data-gramm="false"></textarea>
+              </div>
+            </div>
+
+            <div class="prog-code-import-footer">
+              <div id="progCodeImportMeta" class="prog-code-import-meta">当前代码行数：<strong id="progCodeLineCount">0</strong></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
       <section id="uploadWorkspace" class="workspace-panel hidden">
         <section class="import-home-section">
-          <h2 class="import-section-title">
-            <span>Data Import and Processing</span>
-          </h2>
-          <p class="import-section-note">把原始元数据导入库表，并在需要时执行重建处理，生成后续查询使用的派生结果。</p>
+          <section id="importRawPanel" class="import-subpanel is-active">
           <div class="import-workbench">
             <section class="import-main-lane import-function-zone import-function-zone-import glass-panel">
               <div class="import-function-head import-function-head-main">
@@ -411,28 +532,55 @@
             </section>
 
             <aside class="import-side-lane">
-              <section class="import-function-zone import-function-zone-process glass-panel import-side-panel">
+              <section id="importProcessPanel" class="import-function-zone import-function-zone-process glass-panel import-side-panel is-collapsed">
                 <div class="import-function-head import-function-head-side">
                   <div>
                     <h3 class="import-function-title">数据处理</h3>
                     <p class="import-function-note">重建派生结果表，不改动原始导入表。<span class="import-function-meta import-function-meta-inline">Derived Tables</span></p>
                   </div>
+                  <div class="panel-section-actions">
+                    <button id="toggleImportProcessBtn" class="panel-collapse-btn panel-collapse-icon-btn is-collapsed" type="button" aria-expanded="false" title="展开数据处理" aria-label="展开数据处理">
+                      <span class="panel-collapse-icon" aria-hidden="true"></span>
+                    </button>
+                  </div>
                 </div>
-
-                <div class="import-card-grid import-card-grid-process">
-                  <button id="rebuildRstranMappingRuleBtn" class="import-card import-card-action import-card-action-process glass-panel" type="button">
-                    <span id="rebuildRstranMappingRuleBtnTitle" class="import-card-title">重建字段规则表</span>
-                    <span class="import-card-sub">执行前提：至少已导入 RSTRANRULE、RSTRANFIELD；如需同时查看公式/例程/常量，再导入 RSTRANSTEPROUT、RSTRANSTEPCNST。运行时机：这些规则表有新增、补导或重导后执行。</span>
-                  </button>
-                  <button id="rebuildRstranMappingRuleFullBtn" class="import-card import-card-action import-card-action-process glass-panel" type="button">
-                    <span id="rebuildRstranMappingRuleFullBtnTitle" class="import-card-title">重建完整字段表</span>
-                    <span class="import-card-sub">执行前提：已先重建字段规则表，并已导入 RSTRAN；再按对象类型补齐 DD03L、RSDSSEGFD、RSKSFIELDNEW、RSDIOBJ、RSOADSO。运行时机：基础映射或这些元数据有新增、补导或重导后执行。</span>
-                  </button>
+                <div id="importProcessBody" class="import-process-body hidden">
+                  <div class="import-card-grid import-card-grid-process">
+                    <button id="buildBwObjectFieldInventoryCard" class="import-card import-card-action import-card-action-process glass-panel" type="button" data-build-key="bwObjectFieldInventory" data-status-table="bw_object_field_inventory">
+                      <span class="import-card-stage">Build 1 · Derived Inventory</span>
+                      <span id="buildBwObjectFieldInventoryCardTitle" class="import-card-title">重建对象字段库存</span>
+                      <span class="import-card-sub">输出 bw_object_field_inventory。执行前提：已导入 DD03L、RSDSSEGFD、RSKSFIELDNEW、RSDIOBJ、RSDIOBJT、RSOADSO。运行时机：对象级元数据有新增、补导或重导后执行。</span>
+                      <span class="import-card-dependency-summary">依赖状态：待检查</span>
+                      <span class="import-card-dependencies" aria-live="polite"></span>
+                      <span class="import-card-runtime-note">供后续构建使用：为完整字段表提供对象字段语义库存。</span>
+                      <span class="import-card-time">更新时间：<span id="buildBwObjectFieldInventoryTime">--</span> | 数据条目：<span id="buildBwObjectFieldInventoryCount">0</span></span>
+                    </button>
+                    <button id="rebuildRstranMappingRuleBtn" class="import-card import-card-action import-card-action-process glass-panel" type="button" data-build-key="mappingRule" data-status-table="rstran_mapping_rule">
+                      <span class="import-card-stage">Build 2 · Derived Rules</span>
+                      <span id="rebuildRstranMappingRuleBtnTitle" class="import-card-title">重建字段规则表</span>
+                      <span class="import-card-sub">输出 rstran_mapping_rule。执行前提：至少已导入 RSTRANRULE、RSTRANFIELD；如需同时查看公式/例程/常量，再导入 RSTRANSTEPROUT、RSTRANSTEPCNST。运行时机：这些规则表有新增、补导或重导后执行。</span>
+                      <span class="import-card-dependency-summary">依赖状态：待检查</span>
+                      <span class="import-card-dependencies" aria-live="polite"></span>
+                      <span class="import-card-runtime-note">供后续构建使用：为完整字段表提供规则级映射基础。</span>
+                      <span class="import-card-time">更新时间：<span id="rebuildRstranMappingRuleTime">--</span> | 数据条目：<span id="rebuildRstranMappingRuleCount">0</span></span>
+                    </button>
+                    <button id="rebuildRstranMappingRuleFullBtn" class="import-card import-card-action import-card-action-process glass-panel" type="button" data-build-key="mappingRuleFull" data-status-table="rstran_mapping_rule_full">
+                      <span class="import-card-stage">Build 3 · Runtime Read Model</span>
+                      <span id="rebuildRstranMappingRuleFullBtnTitle" class="import-card-title">重建完整字段表</span>
+                      <span class="import-card-sub">输出 rstran_mapping_rule_full。执行前提：已具备 RSTRAN、字段规则和对象字段库存；运行时机：基础映射或对象字段元数据有新增、补导或重导后执行。</span>
+                      <span class="import-card-dependency-summary">依赖状态：待检查</span>
+                      <span class="import-card-dependencies" aria-live="polite"></span>
+                      <span class="import-card-runtime-note">Runtime 主读模型：查询阶段直接读取该表，不再回退到原始表推断。</span>
+                      <span class="import-card-time">更新时间：<span id="rebuildRstranMappingRuleFullTime">--</span> | 数据条目：<span id="rebuildRstranMappingRuleFullCount">0</span></span>
+                    </button>
+                  </div>
+                  <p class="import-side-hint">建议顺序：先导入上方原始表，再按“对象字段库存 → 字段规则表 → 完整字段表”执行下方构建。最终查询只读取完整字段表这类已构建读模型。</p>
                 </div>
-                <p class="import-side-hint">建议顺序：先导入上方原始表，再执行下方重建。</p>
               </section>
             </aside>
           </div>
+              </section>
+
         </section>
       </section>
     </main>
@@ -652,6 +800,24 @@
     </div>
   </section>
 
+  <section id="progCodeSearchModal" class="import-modal hidden" aria-modal="true">
+    <div class="import-shell import-shell-table prog-code-search-shell glass-panel" tabindex="-1">
+      <div class="import-head">
+        <h2 id="progCodeSearchModalTitle">选择程序</h2>
+        <div class="window-controls">
+          <button id="closeProgCodeSearchModal" class="glass-btn tiny more-window-btn more-window-btn-close" type="button" aria-label="关闭" title="关闭"></button>
+        </div>
+      </div>
+      <div id="progCodeSearchModalMeta" class="prog-code-search-meta">请选择一个程序。</div>
+      <div class="prog-code-search-list-wrap">
+        <div id="progCodeSearchList" class="prog-code-search-list" role="listbox" aria-label="PROG_CODE 查询结果"></div>
+      </div>
+      <div class="import-actions">
+        <button id="cancelProgCodeSearchBtn" class="glass-btn action-btn path-compact-button" type="button">关闭</button>
+      </div>
+    </div>
+  </section>
+
   <div id="appLoadingOverlay" class="app-loading-overlay hidden" aria-hidden="true">
     <div class="app-loading-card">
       <div class="app-loading-spinner" aria-hidden="true"></div>
@@ -675,11 +841,11 @@
     </div>
   </div>
 
-  <script src="./mock-data.js?v=20260402-v2.0.0"></script>
-  <script src="./runtime-config.js?v=20260402-v2.0.0"></script>
+  <script src="./mock-data.js?v=20260406-v2.0.1"></script>
+  <script src="./runtime-config.js?v=20260406-v2.0.1"></script>
   <script src="./vendor/table-analysis-ui-kit/table-analysis-ui-kit.js"></script>
   <script src="./vendor/ag-grid/ag-grid-community.min.js?v=32.3.3"></script>
   <script src="./vendor/highlightjs/common.min.js?v=11.11.1"></script>
-  <script src="./app.js?v=20260402-v2.0.0"></script>
+  <script src="./app.js?v=20260406-v2.0.1"></script>
 </body>
 </html>
